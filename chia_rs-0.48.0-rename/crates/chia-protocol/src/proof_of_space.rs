@@ -1,0 +1,602 @@
+use crate::bytes::{Bytes, Bytes32};
+use chia_bls::G1Element;
+use chia_sha2::Sha256;
+use chia_streamable_macro::streamable;
+use chia_traits::{Error, Result, Streamable};
+use std::io::Cursor;
+
+// This structure was updated for v2 proof-of-space, in a backwards compatible
+// way. The Option types are serialized as 1 byte to indicate whether the value
+// is set or not. Only 1 bit out of 8 are used. The byte prefix for
+// pool_contract_puzzle_hash is used to indicate whether this is a v1 or v2
+// proof.
+#[streamable(no_streamable)]
+pub struct ProofOfSpace {
+    challenge: Bytes32,
+    pool_public_key: Option<G1Element>,
+    pool_contract_puzzle_hash: Option<Bytes32>,
+    plot_public_key: G1Element,
+
+    // this is 0 for v1 proof-of-space and 1 for v2. The version is encoded as
+    // part of the 8 bits prefix, indicating whether pool_contract_puzzle_hash
+    // is set or not
+    version: u8,
+
+    // These are set for v2 proofs and all zero for v1 proofs
+    plot_index: u16,
+    meta_group: u8,
+    strength: u8,
+
+    // this is set for v1 proofs, and zero for v2 proofs
+    size: u8,
+
+    proof: Bytes,
+}
+
+#[cfg(feature = "py-bindings")]
+use pyo3::prelude::*;
+
+#[cfg(feature = "py-bindings")]
+#[pyclass(name = "PlotParam")]
+pub struct PyPlotParam {
+    #[pyo3(get)]
+    pub size_v1: Option<u8>,
+    #[pyo3(get)]
+    pub strength_v2: Option<u8>,
+    #[pyo3(get)]
+    pub plot_index: u16,
+    #[pyo3(get)]
+    pub meta_group: u8,
+}
+
+#[cfg(feature = "py-bindings")]
+#[pymethods]
+impl PyPlotParam {
+    #[staticmethod]
+    fn make_v1(s: u8) -> Self {
+        assert!(s < 64);
+        Self {
+            size_v1: Some(s),
+            strength_v2: None,
+            plot_index: 0,
+            meta_group: 0,
+        }
+    }
+
+    #[staticmethod]
+    fn make_v2(plot_index: u16, meta_group: u8, strength: u8) -> Self {
+        assert!(strength < 64);
+        Self {
+            size_v1: None,
+            strength_v2: Some(strength),
+            plot_index,
+            meta_group,
+        }
+    }
+}
+
+pub fn compute_plot_id_v1(
+    plot_pk: &G1Element,
+    pool_pk: Option<&G1Element>,
+    pool_contract: Option<&Bytes32>,
+) -> Bytes32 {
+    let mut ctx = Sha256::new();
+    // plot_id = sha256( ( pool_pk | contract_ph) + plot_pk)
+    if let Some(pool_pk) = pool_pk {
+        pool_pk.update_digest(&mut ctx);
+    } else if let Some(contract_ph) = pool_contract {
+        contract_ph.update_digest(&mut ctx);
+    } else {
+        panic!("invalid proof of space. Neither pool pk nor contract puzzle hash set");
+    }
+    plot_pk.update_digest(&mut ctx);
+    ctx.finalize().into()
+}
+
+pub fn compute_plot_group_id_v2(
+    strength: u8,
+    plot_pk: &G1Element,
+    pool_pk: Option<&G1Element>,
+    pool_contract: Option<&Bytes32>,
+) -> Bytes32 {
+    // plot_group_id = sha256( strength + plot_pk + (pool_pk | contract_ph) )
+    let mut group_ctx = Sha256::new();
+    strength.update_digest(&mut group_ctx);
+    plot_pk.update_digest(&mut group_ctx);
+    if let Some(pool_pk) = pool_pk {
+        pool_pk.update_digest(&mut group_ctx);
+    } else if let Some(contract_ph) = pool_contract {
+        contract_ph.update_digest(&mut group_ctx);
+    } else {
+        panic!(
+            "failed precondition of compute_plot_group_id_v2(). Either pool-public-key or pool-contract-hash must be specified"
+        );
+    }
+    group_ctx.finalize().into()
+}
+
+pub fn compute_plot_id_v2(
+    strength: u8,
+    plot_pk: &G1Element,
+    pool_pk: Option<&G1Element>,
+    pool_contract: Option<&Bytes32>,
+    plot_index: u16,
+    meta_group: u8,
+) -> Bytes32 {
+    let mut ctx = Sha256::new();
+    // plot_id = sha256( plot_group_id + plot_index + meta_group)
+    let plot_group_id = compute_plot_group_id_v2(strength, plot_pk, pool_pk, pool_contract);
+
+    plot_group_id.update_digest(&mut ctx);
+    plot_index.update_digest(&mut ctx);
+    meta_group.update_digest(&mut ctx);
+    ctx.finalize().into()
+}
+
+impl ProofOfSpace {
+    pub fn compute_plot_id(&self) -> Bytes32 {
+        if self.version == 0 {
+            // v1 proofs
+            compute_plot_id_v1(
+                &self.plot_public_key,
+                self.pool_public_key.as_ref(),
+                self.pool_contract_puzzle_hash.as_ref(),
+            )
+        } else if self.version == 1 {
+            // v2 proofs
+            compute_plot_id_v2(
+                self.strength,
+                &self.plot_public_key,
+                self.pool_public_key.as_ref(),
+                self.pool_contract_puzzle_hash.as_ref(),
+                self.plot_index,
+                self.meta_group,
+            )
+        } else {
+            panic!("unknown proof version: {}", self.version);
+        }
+    }
+
+    /// returns the quality string of the v2 proof of space.
+    /// returns None if this is a v1 proof or if the proof is invalid.
+    pub fn quality_string(&self) -> Option<Bytes32> {
+        if self.version != 1 {
+            return None;
+        }
+
+        let k_size = (self.proof.len() * 8 / 128) as u8;
+        let plot_id = self.compute_plot_id().to_bytes();
+        chia_pos2::quality_string_from_proof(&plot_id, k_size, self.strength, self.proof.as_slice())
+            .map(|quality| {
+                let mut sha256 = Sha256::new();
+                sha256.update(chia_pos2::serialize_quality(
+                    &quality.chain_links,
+                    self.strength,
+                ));
+                sha256.finalize().into()
+            })
+    }
+}
+
+#[cfg(feature = "py-bindings")]
+#[pymethods]
+impl ProofOfSpace {
+    #[pyo3(name = "param")]
+    fn py_param(&self) -> PyPlotParam {
+        match self.version {
+            0 => PyPlotParam {
+                size_v1: Some(self.size),
+                strength_v2: None,
+                plot_index: 0,
+                meta_group: 0,
+            },
+            1 => PyPlotParam {
+                size_v1: None,
+                strength_v2: Some(self.strength),
+                plot_index: self.plot_index,
+                meta_group: self.meta_group,
+            },
+            _ => {
+                panic!("invalid proof-of-space version {}", self.version);
+            }
+        }
+    }
+
+    #[pyo3(name = "compute_plot_id")]
+    pub fn py_compute_plot_id(&self) -> Bytes32 {
+        self.compute_plot_id()
+    }
+
+    #[pyo3(name = "quality_string")]
+    pub fn py_quality_string(&self) -> Option<Bytes32> {
+        self.quality_string()
+    }
+}
+
+// ProofOfSpace was updated in Chia 3.0 to support v2 proofs. In order to stay
+// backwards compatible with the network protocol and the block hashes of
+// previous versions, for v1 proofs, some care has to be taken.
+// Option fields are serialized with a 1-byte prefix indicating whether the
+// field is set or not. This byte is either 0 or 1. This leaves 7 unused bits.
+// We use bit 2 in the byte prefix for the pool_contract_puzzle_hash field to
+// indicate whether this is a v2 proof or not. v1 proofs leave this bit as 0,
+// and thus remain backwards compatible. V2 proofs set it to 1, which alters
+// which fields are serialized. e.g. we no longer include size (k) of the plot
+// since v2 plots have a fixed size.
+impl Streamable for ProofOfSpace {
+    fn update_digest(&self, digest: &mut Sha256) {
+        self.challenge.update_digest(digest);
+        self.pool_public_key.update_digest(digest);
+
+        if self.version == 0 {
+            self.pool_contract_puzzle_hash.update_digest(digest);
+            self.plot_public_key.update_digest(digest);
+            self.size.update_digest(digest);
+            self.proof.update_digest(digest);
+        } else if self.version == 1 {
+            if let Some(pool_contract) = self.pool_contract_puzzle_hash {
+                0b11_u8.update_digest(digest);
+                pool_contract.update_digest(digest);
+            } else {
+                0b10_u8.update_digest(digest);
+            }
+
+            self.plot_public_key.update_digest(digest);
+            self.plot_index.update_digest(digest);
+            self.meta_group.update_digest(digest);
+            self.strength.update_digest(digest);
+
+            // for v2 proofs, we don't hash the full proof directly. The full
+            // proof is the witness to this quality string commitment.
+            self.quality_string()
+                .expect("internal error. Can't compute hash of invalid ProofOfSpace")
+                .update_digest(digest);
+        } else {
+            panic!("version field must be 0 or 1, but it's {}", self.version);
+        }
+    }
+
+    fn stream(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.challenge.stream(out)?;
+        self.pool_public_key.stream(out)?;
+
+        if self.version == 0 {
+            self.pool_contract_puzzle_hash.stream(out)?;
+            self.plot_public_key.stream(out)?;
+            self.size.stream(out)?;
+        } else if self.version == 1 {
+            if let Some(pool_contract) = self.pool_contract_puzzle_hash {
+                0b11_u8.stream(out)?;
+                pool_contract.stream(out)?;
+            } else {
+                0b10_u8.stream(out)?;
+            }
+
+            self.plot_public_key.stream(out)?;
+            self.plot_index.stream(out)?;
+            self.meta_group.stream(out)?;
+            self.strength.stream(out)?;
+        } else {
+            return Err(Error::InvalidPoS);
+        }
+
+        self.proof.stream(out)
+    }
+
+    fn parse<const TRUSTED: bool>(input: &mut Cursor<&[u8]>) -> Result<Self> {
+        let challenge = <Bytes32 as Streamable>::parse::<TRUSTED>(input)?;
+        let pool_public_key = <Option<G1Element> as Streamable>::parse::<TRUSTED>(input)?;
+
+        let prefix = <u8 as Streamable>::parse::<TRUSTED>(input)?;
+        let version = prefix >> 1;
+        let pool_contract_puzzle_hash = if (prefix & 1) != 0 {
+            Some(<Bytes32 as Streamable>::parse::<TRUSTED>(input)?)
+        } else {
+            None
+        };
+
+        let plot_public_key = <G1Element as Streamable>::parse::<TRUSTED>(input)?;
+
+        if version == 0 {
+            let size = <u8 as Streamable>::parse::<TRUSTED>(input)?;
+            let proof = <Bytes as Streamable>::parse::<TRUSTED>(input)?;
+
+            Ok(ProofOfSpace {
+                challenge,
+                pool_public_key,
+                pool_contract_puzzle_hash,
+                plot_public_key,
+                version,
+                plot_index: 0,
+                meta_group: 0,
+                strength: 0,
+                size,
+                proof,
+            })
+        } else if version == 1 {
+            let plot_index = <u16 as Streamable>::parse::<TRUSTED>(input)?;
+            let meta_group = <u8 as Streamable>::parse::<TRUSTED>(input)?;
+            let strength = <u8 as Streamable>::parse::<TRUSTED>(input)?;
+            let proof = <Bytes as Streamable>::parse::<TRUSTED>(input)?;
+
+            if pool_public_key.is_some() == pool_contract_puzzle_hash.is_some() {
+                return Err(Error::InvalidPoS);
+            }
+
+            Ok(ProofOfSpace {
+                challenge,
+                pool_public_key,
+                pool_contract_puzzle_hash,
+                plot_public_key,
+                version,
+                plot_index,
+                meta_group,
+                strength,
+                size: 0,
+                proof,
+            })
+        } else {
+            Err(Error::InvalidPoS)
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::needless_pass_by_value)]
+mod tests {
+    use super::*;
+    use hex_literal::hex;
+    use rstest::rstest;
+
+    fn plot_pk() -> G1Element {
+        const PLOT_PK_BYTES: [u8; 48] = hex!(
+            "96b35c22adf93068c9536e016e88251ad715a591d8deabb60917d9c495f45a220ca56b906793c27778d5f7f71fb50b94"
+        );
+        G1Element::from_bytes(&PLOT_PK_BYTES).expect("PLOT_PK_BYTES is valid")
+    }
+
+    fn pool_pk() -> G1Element {
+        const POOL_PK_BYTES: [u8; 48] = hex!(
+            "ac6e995e0f9c307853fa5c79e571de5ec2f2d45e5c2641c0847fef8041916e4d07d5a9200d5aa92ceac3b1bf41ce93b2"
+        );
+        G1Element::from_bytes(&POOL_PK_BYTES).expect("POOL_PK_BYTES is valid")
+    }
+
+    fn make_pos(version: u8, has_pool_pk: bool, has_contract: bool, size: u8) -> ProofOfSpace {
+        ProofOfSpace::new(
+            Bytes32::default(),
+            has_pool_pk.then(pool_pk),
+            has_contract.then(Bytes32::default),
+            plot_pk(),
+            version,
+            0,
+            0,
+            0,
+            size,
+            Bytes::from(vec![0x80]),
+        )
+    }
+
+    // Locate the pool_contract_puzzle_hash Option prefix byte (which also
+    // encodes the version) by finding where a contract-present and a
+    // contract-absent serialization first differ.
+    fn prefix_offset() -> usize {
+        let absent = make_pos(0, true, false, 32).to_bytes().unwrap();
+        let present = make_pos(0, true, true, 32).to_bytes().unwrap();
+        absent
+            .iter()
+            .zip(present.iter())
+            .position(|(a, b)| a != b)
+            .unwrap()
+    }
+
+    // these are regression tests and test vectors for plot ID computations
+    #[rstest]
+    #[case("pool_pk", hex!("e185d4ec721ec060eb5833ec07d802fc69a43ed45dd59d7f20c58494421e0270"))]
+    #[case("contract_ph", hex!("4e196e2fb1fc4c85fc48b30c1e585dc0bee08451895909b0ae2db63e2788ab82"))]
+    fn test_compute_plot_id_v1(#[case] variant: &str, #[case] expected: [u8; 32]) {
+        let (pool_pk, pool_contract) = match variant {
+            "pool_pk" => (Some(pool_pk()), None),
+            "contract_ph" => (None, Some(Bytes32::new([1u8; 32]))),
+            _ => panic!("unknown v1 variant: {variant}"),
+        };
+        let result = compute_plot_id_v1(&plot_pk(), pool_pk.as_ref(), pool_contract.as_ref());
+        assert_eq!(result, Bytes32::new(expected));
+    }
+
+    #[rstest]
+    #[case(0, "pool_pk", hex!("5457cccc4cd79900da4235cf5ca7d978a1993581376e76dfb089c274225419d1"))]
+    #[case(10, "pool_pk", hex!("e9d517de0ccfa94baf9e94b39dd0e8afce0451ec27635f43f2aa9b2f429d0501"))]
+    #[case(0, "contract_ph", hex!("210d1a307d26acb3fcfa02208061fc6b80e3fbb9ca5f3e4a596b7521d87ccd79"))]
+    #[case(5, "contract_ph", hex!("824d7b67ab4269c91eb0a2fe10cb48a1c1ad8cfa8a642387d49d5c3c3acbc3bd"))]
+    fn test_compute_plot_group_id_v2(
+        #[case] strength: u8,
+        #[case] variant: &str,
+        #[case] expected: [u8; 32],
+    ) {
+        let (pool_pk, pool_contract) = match variant {
+            "pool_pk" => (Some(pool_pk()), None),
+            "contract_ph" => (None, Some(Bytes32::new([1u8; 32]))),
+            _ => panic!("unknown v2 variant: {variant}"),
+        };
+        let result = compute_plot_group_id_v2(
+            strength,
+            &plot_pk(),
+            pool_pk.as_ref(),
+            pool_contract.as_ref(),
+        );
+        assert_eq!(result, Bytes32::new(expected));
+    }
+
+    #[rstest]
+    #[case(0, 0, 0, "pool_pk", hex!("d3692a5d4fbfe1061053d4afada80d8f0b58b87b46c170e7087716a72091def0"))]
+    #[case(10, 256, 7, "pool_pk", hex!("2316eadc21d38c4e8740eb9efd49a0c2014a5b1ef992f5ae0b2d1fda01a4b034"))]
+    #[case(0, 0, 0, "contract_ph", hex!("03b09cab4bfdbcd1e626d93888a72f002d3948459c23cde52e9dd8d72dd9ae04"))]
+    #[case(5, 100, 3, "contract_ph", hex!("d575860c249ace41a656fe0d97719127f839fae55e6c32ffd7743b5a8a2eae4d"))]
+    fn test_compute_plot_id_v2(
+        #[case] strength: u8,
+        #[case] plot_index: u16,
+        #[case] meta_group: u8,
+        #[case] variant: &str,
+        #[case] expected: [u8; 32],
+    ) {
+        let (pool_pk, pool_contract) = match variant {
+            "pool_pk" => (Some(pool_pk()), None),
+            "contract_ph" => (None, Some(Bytes32::new([1u8; 32]))),
+            _ => panic!("unknown v2 variant: {variant}"),
+        };
+        let result = compute_plot_id_v2(
+            strength,
+            &plot_pk(),
+            pool_pk.as_ref(),
+            pool_contract.as_ref(),
+            plot_index,
+            meta_group,
+        );
+        assert_eq!(result, Bytes32::new(expected));
+    }
+
+    // Regression tests for quality_string(). Vectors in quality-string-tests/*.txt:
+    // 7 lines (challenge hex, strength, plot_index, meta_group, pool hex, proof hex, expect_quality hex).
+    #[rstest]
+    #[case("pool-2-0-0")]
+    #[case("contract-2-0-0")]
+    #[case("contract-3-0-0")]
+    #[case("pool-3-0-0")]
+    #[case("pool-2-1-0")]
+    #[case("pool-2-0-1")]
+    #[case("pool-2-1000-7")]
+    fn test_quality_string(#[case] name: &str) {
+        let plot_pk = G1Element::from_bytes(&hex!(
+            "a9c96f979d895b9ded08907ecd775abf889d51219bb7776dd73fdbac6b0dcc063c72c9e10d96776f486bbd1416b54533"
+        ))
+        .unwrap();
+
+        let path = format!("quality-string-tests/{name}.txt");
+        let contents =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let l: Vec<&str> = contents
+            .lines()
+            .map(|line| line.split('#').next().unwrap_or(line).trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(l.len(), 7, "expected 7 lines");
+
+        let challenge: [u8; 32] = hex::decode(l[0])
+            .expect("challenge hex")
+            .try_into()
+            .unwrap();
+        let strength: u8 = l[1].parse().expect("strength");
+        let plot_index: u16 = l[2].parse().expect("plot_index");
+        let meta_group: u8 = l[3].parse().expect("meta_group");
+        let (pool_pk, pool_contract) = if l[4].len() == 96 {
+            let b = hex::decode(l[4]).expect("pool_pk hex");
+            (
+                Some(G1Element::from_bytes(b.as_slice().try_into().unwrap()).expect("pool_pk")),
+                None,
+            )
+        } else {
+            let ph: [u8; 32] = hex::decode(l[4])
+                .expect("pool_contract hex")
+                .try_into()
+                .unwrap();
+            (None, Some(Bytes32::new(ph)))
+        };
+        let proof = hex::decode(l[5]).expect("proof hex");
+        let expect_quality: [u8; 32] = hex::decode(l[6])
+            .expect("expect_quality hex")
+            .try_into()
+            .unwrap();
+
+        let pos = ProofOfSpace::new(
+            Bytes32::new(challenge),
+            pool_pk,
+            pool_contract,
+            plot_pk,
+            1,
+            plot_index,
+            meta_group,
+            strength,
+            22,
+            Bytes::from(proof),
+        );
+
+        let quality = pos
+            .quality_string()
+            .expect("quality_string should return Some");
+        assert_eq!(quality, Bytes32::new(expect_quality));
+    }
+
+    // Round-trip every accepted prefix-byte combination. For v0 (legacy v1
+    // proofs) the pool_contract Option is lenient and accepts any of
+    // {neither, pool_pk, contract, both}, exactly like the original plain
+    // Option<> derive. For v1 (v2 proofs) the size field is not stored and
+    // collapses to 0 on parse.
+    #[rstest]
+    #[case::v0_pool(0, true, false, 18, 18)]
+    #[case::v0_contract(0, false, true, 28, 28)]
+    #[case::v0_both_lenient(0, true, true, 38, 38)]
+    #[case::v0_neither_lenient(0, false, false, 10, 10)]
+    #[case::v1_pool(1, true, false, 18, 0)]
+    #[case::v1_contract(1, false, true, 28, 0)]
+    fn roundtrip(
+        #[case] version: u8,
+        #[case] has_pool_pk: bool,
+        #[case] has_contract: bool,
+        #[case] size: u8,
+        #[case] expected_size: u8,
+    ) {
+        let buf = make_pos(version, has_pool_pk, has_contract, size)
+            .to_bytes()
+            .unwrap();
+        let parsed = ProofOfSpace::parse::<false>(&mut Cursor::<&[u8]>::new(&buf)).unwrap();
+
+        assert_eq!(parsed.version, version);
+        assert_eq!(parsed.pool_public_key.is_some(), has_pool_pk);
+        assert_eq!(parsed.pool_contract_puzzle_hash.is_some(), has_contract);
+        assert_eq!(parsed.size, expected_size);
+        // re-serialization must be byte-for-byte stable
+        assert_eq!(parsed.to_bytes().unwrap(), buf);
+    }
+
+    // Inputs that must be rejected. The v2 (version 1) format requires exactly
+    // one of pool_public_key / pool_contract_puzzle_hash to be set, so both-set
+    // and neither-set are rejected at parse time. An unknown version (>= 2) is
+    // rejected at serialize time. The exact error code is unimportant, only
+    // that it fails.
+    #[rstest]
+    #[case::v1_both_set(1, true, true)]
+    #[case::v1_neither_set(1, false, false)]
+    #[case::unknown_version(2, true, false)]
+    fn parse_rejects(#[case] version: u8, #[case] has_pool_pk: bool, #[case] has_contract: bool) {
+        let pos = make_pos(version, has_pool_pk, has_contract, 0);
+        match pos.to_bytes() {
+            Ok(buf) => {
+                let err = ProofOfSpace::parse::<false>(&mut Cursor::<&[u8]>::new(&buf))
+                    .expect_err("must fail to parse");
+                assert_eq!(err, Error::InvalidPoS);
+            }
+            Err(e) => assert_eq!(e, Error::InvalidPoS),
+        }
+    }
+
+    // The version flag is packed into the pool_contract_puzzle_hash Option
+    // prefix byte. Only bit 0 (the Option flag) and bit 1 (the version) carry
+    // meaning. The high bits (2..=7) must be rejected for both versions,
+    // matching the strictness of a plain Option<> prefix in earlier protocol
+    // versions where this byte could only ever be 0 or 1.
+    #[rstest]
+    fn high_prefix_bits_rejected(#[values(0, 1)] version: u8, #[values(2, 3, 4, 5, 6, 7)] bit: u8) {
+        let offset = prefix_offset();
+        let size = if version == 0 { 32 } else { 0 };
+        let mut buf = make_pos(version, true, false, size).to_bytes().unwrap();
+
+        let expected_prefix = if version == 0 { 0b00 } else { 0b10 };
+        assert_eq!(buf[offset], expected_prefix);
+
+        buf[offset] |= 1u8 << bit;
+        let err = ProofOfSpace::parse::<false>(&mut Cursor::<&[u8]>::new(&buf))
+            .expect_err("high prefix bit must be rejected");
+        assert_eq!(err, Error::InvalidPoS);
+    }
+}

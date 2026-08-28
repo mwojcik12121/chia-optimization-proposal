@@ -1,0 +1,23 @@
+[package]
+name = "chia-bls-fuzz"
+version.workspace = true
+authors = ["Automatically generated"]
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libfuzzer-sys = { workspace = true }
+chia-bls = { workspace = true, features = ["arbitrary"] }
+
+[[bin]]
+name = "derive"
+path = "fuzz_targets/derive.rs"
+test = false
+doc = false
+bench = false

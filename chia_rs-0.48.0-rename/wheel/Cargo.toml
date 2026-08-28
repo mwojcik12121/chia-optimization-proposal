@@ -1,0 +1,44 @@
+[package]
+name = "chia_rs"
+version.workspace = true
+authors = ["Richard Kiss <him@richardkiss.com>"]
+edition = "2024"
+license = "Apache-2.0"
+description = "Code useful for implementing chia consensus."
+homepage = "https://github.com/Chia-Network/chia_rs"
+repository = "https://github.com/Chia-Network/chia_rs"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[lib]
+name = "chia_rs"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[package.metadata.maturin]
+python-source = "python"
+
+# chia-client and chia-ssl are needed for the wheel sdist to work correctly
+# ignore any errors from machete about unused dependencies
+[package.metadata.cargo-machete]
+ignored = ["chia-client", "chia-ssl"]
+
+[features]
+openssl = ["clvmr/openssl"]
+
+[dependencies]
+clvmr = { workspace = true }
+pyo3 = { workspace = true, features = ["multiple-pymethods"] }
+bincode = { workspace = true }
+chia-consensus = { workspace = true, features = ["py-bindings"] }
+chia-bls = { workspace = true, features = ["py-bindings"]  }
+chia-datalayer = { workspace = true, features = ["py-bindings"]  }
+chia-protocol = { workspace = true, features = ["py-bindings"]  }
+clvm-utils = { workspace = true }
+chia-ssl = { workspace = true }
+chia-client = { workspace = true }
+chia-traits = { workspace = true }
+chia-pos2 = { workspace = true }
+chia-sha2 = { workspace = true }
