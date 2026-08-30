@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from chia_rs import PlotParam
-from chia_rs.sized_ints import uint8, uint16, uint32, uint64, uint128
-from pytest import raises
+from types import SimpleNamespace
+from typing import Any, cast
 
+from chia_rs import PlotParam
+from chia_rs.sized_bytes import bytes32
+from chia_rs.sized_ints import uint8, uint16, uint32, uint64, uint128
+from pytest import MonkeyPatch, raises
+
+from chia.consensus import pot_iterations
 from chia.consensus.default_constants import DEFAULT_CONSTANTS
 from chia.consensus.pos_quality import _expected_plot_size
 from chia.consensus.pot_iterations import (
@@ -12,12 +17,42 @@ from chia.consensus.pot_iterations import (
     calculate_sp_interval_iters,
     calculate_sp_iters,
     is_overflow_block,
+    validate_pospace_and_get_quality_and_iters,
+    validate_pospace_and_get_required_iters,
 )
 from chia.util.hash import std_hash
 
 test_constants = DEFAULT_CONSTANTS.replace(
     NUM_SPS_SUB_SLOT=uint8(32), SUB_SLOT_TIME_TARGET=uint16(300), HARD_FORK2_HEIGHT=uint32(100000000)
 )
+
+
+def test_validated_pospace_carries_matching_quality_and_iterations(monkeypatch: MonkeyPatch) -> None:
+    quality = bytes32(b"\x42" * 32)
+    proof = SimpleNamespace(param=lambda: PlotParam.make_v1(32))
+    monkeypatch.setattr(pot_iterations, "verify_and_get_quality_string", lambda *args, **kwargs: quality)
+
+    result = validate_pospace_and_get_quality_and_iters(
+        test_constants,
+        cast(Any, proof),
+        bytes32.zeros,
+        bytes32(b"\x01" * 32),
+        uint32(1),
+        uint64(7),
+        uint32(0),
+    )
+
+    assert result is not None
+    assert result.quality == quality
+    assert result.required_iters == validate_pospace_and_get_required_iters(
+        test_constants,
+        cast(Any, proof),
+        bytes32.zeros,
+        bytes32(b"\x01" * 32),
+        uint32(1),
+        uint64(7),
+        uint32(0),
+    )
 
 
 class TestPotIterations:

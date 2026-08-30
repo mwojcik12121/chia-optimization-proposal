@@ -1,0 +1,214 @@
+name: "${COMPOSE_PROJECT_NAME:-sia-runtime200-test}"
+
+x-common-node: &common-node
+  restart: "no"
+  pull_policy: never
+  command: ["${SCENARIO:-1}"]
+  environment:
+    SCENARIO: "${SCENARIO:-1}"
+    SCENARIO_NODES: "${SCENARIO_NODES:-node01,node02,node03,node04,node05,node06,node07,node08,node09}"
+    BOOTSTRAP_TIMEOUT: "${BOOTSTRAP_TIMEOUT:-1800}"
+    TIE_TIMEOUT: "${TIE_TIMEOUT:-1200}"
+    TZ: "${TZ:-:/etc/localtime}"
+  cap_add:
+    - NET_ADMIN
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 1024
+  stop_grace_period: 30s
+  tmpfs:
+    - /tmp:size=268435456,mode=1777
+  volumes:
+    - /etc/localtime:/etc/localtime:ro
+  networks:
+    sia_internal: {}
+
+x-farmer-resources: &farmer-resources
+  cpu_period: 210000
+  cpu_quota: 80000
+  mem_limit: 1227133513
+  memswap_limit: 1227133513
+  storage_opt:
+    size: "166666666668"
+
+x-timing-resources: &timing-resources
+  cpu_period: 210000
+  cpu_quota: 240000
+  mem_limit: 3681400539
+  memswap_limit: 3681400539
+  storage_opt:
+    size: "41666666666"
+
+services:
+  node01:
+    <<: [*common-node, *farmer-resources]
+    image: "sia-runtime200-node01:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "01"
+        NODE_ROLE: farmer
+    hostname: node01
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.11
+
+  node02:
+    <<: [*common-node, *farmer-resources]
+    image: "sia-runtime200-node02:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "02"
+        NODE_ROLE: farmer
+    hostname: node02
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.12
+
+  node03:
+    <<: [*common-node, *farmer-resources]
+    image: "sia-runtime200-node03:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "03"
+        NODE_ROLE: farmer
+    hostname: node03
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.13
+
+  node04:
+    <<: [*common-node, *timing-resources]
+    image: "sia-runtime200-node04:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "04"
+        NODE_ROLE: timelord
+    hostname: node04
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.14
+
+  node05:
+    <<: [*common-node, *timing-resources]
+    image: "sia-runtime200-node05:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "05"
+        NODE_ROLE: vdf
+    hostname: node05
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.15
+
+  node06:
+    <<: [*common-node, *timing-resources]
+    image: "sia-runtime200-node06:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "06"
+        NODE_ROLE: vdf
+    hostname: node06
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.16
+
+  node07:
+    <<: [*common-node, *timing-resources]
+    image: "sia-runtime200-node07:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "07"
+        NODE_ROLE: timelord
+    hostname: node07
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.17
+
+  node08:
+    <<: [*common-node, *timing-resources]
+    image: "sia-runtime200-node08:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "08"
+        NODE_ROLE: vdf
+    hostname: node08
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.18
+
+  node09:
+    <<: [*common-node, *timing-resources]
+    image: "sia-runtime200-node09:${RUNTIME_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      network: none
+      pull: false
+      dockerfile: docker/Dockerfile.node
+      args:
+        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        NODE_ID: "09"
+        NODE_ROLE: vdf
+    hostname: node09
+    networks:
+      sia_internal:
+        ipv4_address: 172.28.0.19
+
+networks:
+  sia_internal:
+    name: "${COMPOSE_PROJECT_NAME:-sia-runtime200-test}_internal"
+    driver: bridge
+    internal: true
+    attachable: false
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1

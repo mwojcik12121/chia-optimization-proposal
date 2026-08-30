@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import sqlite3
+from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 
 import aiosqlite
@@ -12,6 +13,7 @@ from chia_rs import BlockRecord, FullBlock, SubEpochChallengeSegment, SubEpochSe
 from chia_rs.sized_bytes import bytes32
 from chia_rs.sized_ints import uint32
 
+from chia.consensus.fork_order import FORK_ORDER_KEY_VERSION
 from chia.full_node.full_block_utils import GeneratorBlockInfo, block_info_from_block, generator_from_block
 from chia.util.batches import to_batches
 from chia.util.db_wrapper import DBWrapper2, execute_fetchone
@@ -75,6 +77,15 @@ class BlockStore:
             # peak. The "key" field is there to make update statements simple
             await conn.execute("CREATE TABLE IF NOT EXISTS current_peak(key int PRIMARY KEY, hash blob)")
 
+            # Fork-order metadata is kept separate to preserve the historical
+            # BlockRecord serialization and permit an idempotent backfill.
+            await conn.execute(
+                "CREATE TABLE IF NOT EXISTS fork_order_keys("
+                "header_hash blob PRIMARY KEY,"
+                "tie_key blob NOT NULL,"
+                "key_version smallint NOT NULL)"
+            )
+
             # If any of these indices are altered, they should also be altered
             # in the chia/cmds/db_upgrade.py file
             log.info("DB: Creating index height")
@@ -130,7 +141,13 @@ class BlockStore:
                 ),
             )
 
-    async def add_full_block(self, header_hash: bytes32, block: FullBlock, block_record: BlockRecord) -> None:
+    async def add_full_block(
+        self,
+        header_hash: bytes32,
+        block: FullBlock,
+        block_record: BlockRecord,
+        fork_tie_key: bytes32 | None = None,
+    ) -> None:
         self.block_cache.put(header_hash, block)
 
         ses: bytes | None = (
@@ -160,6 +177,66 @@ class BlockStore:
                     bytes(block_record),
                 ),
             )
+            if fork_tie_key is not None:
+                await conn.execute(
+                    "INSERT OR REPLACE INTO fork_order_keys(header_hash, tie_key, key_version) VALUES(?, ?, ?)",
+                    (bytes(header_hash), bytes(fork_tie_key), FORK_ORDER_KEY_VERSION),
+                )
+
+    async def set_fork_order_key(
+        self,
+        header_hash: bytes32,
+        tie_key: bytes32,
+        *,
+        key_version: int = FORK_ORDER_KEY_VERSION,
+    ) -> None:
+        if key_version != FORK_ORDER_KEY_VERSION:
+            raise ValueError(f"unsupported fork-order key version {key_version}")
+        async with self.db_wrapper.writer_maybe_transaction() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO fork_order_keys(header_hash, tie_key, key_version) VALUES(?, ?, ?)",
+                (bytes(header_hash), bytes(tie_key), key_version),
+            )
+
+    async def get_fork_order_key(self, header_hash: bytes32) -> bytes32 | None:
+        async with self.db_wrapper.reader_no_transaction() as conn:
+            row = await execute_fetchone(
+                conn,
+                "SELECT tie_key, key_version FROM fork_order_keys WHERE header_hash=?",
+                (bytes(header_hash),),
+            )
+        if row is None:
+            return None
+        tie_key, key_version = row
+        if key_version != FORK_ORDER_KEY_VERSION:
+            raise RuntimeError(f"unsupported fork-order key version {key_version}")
+        return bytes32(tie_key)
+
+    async def iter_full_blocks_from_height(
+        self,
+        start_height: uint32,
+        *,
+        batch_size: int = 100,
+    ) -> AsyncIterator[tuple[FullBlock, BlockRecord]]:
+        """Iterate stored main-chain and orphan blocks in bounded DB batches."""
+
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+
+        last_rowid = 0
+        while True:
+            async with self.db_wrapper.reader_no_transaction() as conn:
+                async with conn.execute(
+                    "SELECT rowid, block, block_record FROM full_blocks "
+                    "WHERE height>=? AND rowid>? ORDER BY rowid LIMIT ?",
+                    (start_height, last_rowid, batch_size),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+            if not rows:
+                return
+            for rowid, block_blob, block_record_blob in rows:
+                last_rowid = rowid
+                yield decompress(block_blob), BlockRecord.from_bytes(block_record_blob)
 
     async def persist_sub_epoch_challenge_segments(
         self, ses_block_hash: bytes32, segments: list[SubEpochChallengeSegment]

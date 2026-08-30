@@ -83,6 +83,8 @@ DEFAULT_CONSTANTS = ConsensusConstants(
     HARD_FORK2_HEIGHT=uint32(0xFFFFFFFA),
     SOFT_FORK8_HEIGHT=uint32(8655000),
     SOFT_FORK9_HEIGHT=uint32(8655000),
+    # Disabled until a coordinated network activation height is selected.
+    FORK_TIE_BREAK_HEIGHT=uint32(0xFFFFFFFF),
     # starting at the hard fork 2 height, v1 plots will gradually be phased out,
     # and stop working entirely after (1 << this) many epochs
     PLOT_V1_PHASE_OUT_EPOCH_BITS=uint8(8),
@@ -94,15 +96,36 @@ DEFAULT_CONSTANTS = ConsensusConstants(
     PLOT_FILTER_32_HEIGHT=uint32(20643000),
     MIN_PLOT_STRENGTH=uint8(2),
     MAX_PLOT_STRENGTH=uint8(32),
-    # TODO: todo_v2_plots finalize plot filter schedule
-    PLOT_FILTER_V2_FIRST_ADJUSTMENT_HEIGHT=uint32(0xFFFFFFFB),
-    PLOT_FILTER_V2_SECOND_ADJUSTMENT_HEIGHT=uint32(0xFFFFFFFC),
-    PLOT_FILTER_V2_THIRD_ADJUSTMENT_HEIGHT=uint32(0xFFFFFFFD),
+    # Relative to HARD_FORK2_HEIGHT, ordered latest to earliest.
+    PLOT_FILTER_V2_RELATIVE_HEIGHT=[
+        uint32(50_494_000),
+        uint32(45_444_000),
+        uint32(40_394_000),
+        uint32(35_343_000),
+        uint32(30_298_000),
+        uint32(25_247_000),
+        uint32(20_197_000),
+        uint32(15_146_000),
+        uint32(10_101_000),
+    ],
+    FILTER_WINDOW_SIZE=uint8(16),
+    MAX_EFFECTIVE_PLOT_FILTER_BITS=uint8(13),
     TESTNET=False,
 )
 
 
 def update_testnet_overrides(network_id: str, overrides: dict[str, Any]) -> None:
+    # Configuration may expose the canonical activation value for inspection,
+    # but an operator must not be able to choose a different consensus rule.
+    configured_fork_tie_break_height = overrides.get("FORK_TIE_BREAK_HEIGHT")
+    if configured_fork_tie_break_height is not None and int(configured_fork_tie_break_height) != int(
+        DEFAULT_CONSTANTS.FORK_TIE_BREAK_HEIGHT
+    ):
+        raise ValueError(
+            "FORK_TIE_BREAK_HEIGHT is fixed by consensus "
+            f"({DEFAULT_CONSTANTS.FORK_TIE_BREAK_HEIGHT}), not local configuration"
+        )
+
     if network_id != "mainnet":
         overrides.setdefault("TESTNET", True)
 

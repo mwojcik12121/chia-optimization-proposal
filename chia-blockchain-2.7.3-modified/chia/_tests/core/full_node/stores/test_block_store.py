@@ -50,6 +50,27 @@ def maybe_serialize(gen: SerializedProgram | None) -> bytes | None:
         return bytes(gen)
 
 
+@pytest.mark.anyio
+async def test_fork_order_key_storage(db_version: int, use_cache: bool) -> None:
+    header_hash = bytes32(b"\x11" * 32)
+    tie_key = bytes32(b"\x22" * 32)
+
+    async with DBConnection(db_version) as db_wrapper:
+        store = await BlockStore.create(db_wrapper, use_cache=use_cache)
+        assert await store.get_fork_order_key(header_hash) is None
+
+        await store.set_fork_order_key(header_hash, tie_key)
+        assert await store.get_fork_order_key(header_hash) == tie_key
+
+        async with db_wrapper.writer() as conn:
+            await conn.execute(
+                "UPDATE fork_order_keys SET key_version=? WHERE header_hash=?",
+                (999, bytes(header_hash)),
+            )
+        with pytest.raises(RuntimeError, match="unsupported fork-order key version 999"):
+            await store.get_fork_order_key(header_hash)
+
+
 @pytest.mark.limit_consensus_modes(reason="save time")
 @pytest.mark.anyio
 async def test_block_store(tmp_dir: Path, db_version: int, bt: BlockTools, use_cache: bool) -> None:

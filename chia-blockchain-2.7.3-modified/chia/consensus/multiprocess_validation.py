@@ -28,8 +28,9 @@ from chia.consensus.generator_tools import get_block_header, tx_removals_and_add
 from chia.consensus.get_block_challenge import get_block_challenge, pre_sp_tx_block_height
 from chia.consensus.get_block_generator import get_block_generator
 from chia.consensus.pot_iterations import (
+    ValidatedPospace,
     is_overflow_block,
-    validate_pospace_and_get_required_iters,
+    validate_pospace_and_get_quality_and_iters,
 )
 from chia.types.blockchain_format.coin import Coin
 from chia.types.generator_types import BlockGenerator
@@ -49,6 +50,9 @@ class PreValidationResult(Streamable):
     required_iters: uint64 | None  # Iff error is None
     conds: SpendBundleConditions | None  # Iff error is None and block is a transaction block
     timing: uint32  # the time (in milliseconds) it took to pre-validate the block
+    # Appended to keep the existing constructor prefix stable for callers that
+    # only handle unfinished blocks or errors.
+    quality_string: bytes32 | None = None  # Iff proof-of-space validation succeeded
 
     @property
     def validated_signature(self) -> bool:
@@ -86,6 +90,7 @@ def _pre_validate_block(
     prev_generators: list[bytes] | None,
     conds: SpendBundleConditions | None,
     expected_vs: ValidationState,
+    validated_pospace: ValidatedPospace,
     *,
     skip_commitment_validation: bool = False,
 ) -> PreValidationResult:
@@ -151,14 +156,20 @@ def _pre_validate_block(
         error_int: uint16 | None = None
         if error is not None:
             error_int = uint16(error.code.value)
+        elif required_iters != validated_pospace.required_iters:
+            raise RuntimeError(
+                "proof iteration mismatch between initial and finished-header validation: "
+                f"{validated_pospace.required_iters} != {required_iters}"
+            )
 
         validation_time = time.monotonic() - validation_start
         return PreValidationResult(
             error_int,
             None,
-            required_iters,
+            validated_pospace.required_iters if error_int is None else required_iters,
             conds,
             uint32(validation_time * 1000),
+            validated_pospace.quality if error_int is None else None,
         )
     except Exception:
         error_stack = traceback.format_exc()
@@ -231,7 +242,7 @@ async def pre_validate_block(
     else:
         cc_sp_hash = block.reward_chain_block.challenge_chain_sp_vdf.output.get_hash()
 
-    required_iters = validate_pospace_and_get_required_iters(
+    pospace_result = validate_pospace_and_get_quality_and_iters(
         constants,
         block.reward_chain_block.proof_of_space,
         challenge,
@@ -246,14 +257,14 @@ async def pre_validate_block(
             finished_sub_slots=len(block.finished_sub_slots),
         ),
     )
-    if required_iters is None:
+    if pospace_result is None:
         return return_error(Err.INVALID_POSPACE)
 
     try:
         block_rec = block_to_block_record(
             constants,
             blockchain,
-            required_iters,
+            pospace_result.required_iters,
             block,
             sub_slot_iters=expected_vs.ssi,
             prev_ses_block=expected_vs.prev_ses_block,
@@ -290,6 +301,7 @@ async def pre_validate_block(
         previous_generators,
         conds,
         expected_vs,
+        pospace_result,
         skip_commitment_validation=skip_commitment_validation,
         nice=nice,
         dedicated=dedicated,

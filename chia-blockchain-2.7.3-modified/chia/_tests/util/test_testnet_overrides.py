@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from chia.consensus.default_constants import update_testnet_overrides
 
 
@@ -57,3 +59,8 @@ def test_mainnet() -> None:
     overrides: dict[str, Any] = {}
     update_testnet_overrides("mainnet", overrides)
     assert overrides == {}
+
+
+def test_fork_tie_break_height_cannot_be_locally_overridden() -> None:
+    with pytest.raises(ValueError, match="fixed by consensus"):
+        update_testnet_overrides("mainnet", {"FORK_TIE_BREAK_HEIGHT": 0})

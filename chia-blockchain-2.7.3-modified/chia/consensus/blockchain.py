@@ -33,6 +33,7 @@ from chia.consensus.blockchain_mmr import BlockchainMMRManager
 from chia.consensus.coin_store_protocol import CoinStoreProtocol
 from chia.consensus.difficulty_adjustment import get_next_sub_slot_iters_and_difficulty
 from chia.consensus.find_fork_point import lookup_fork_chain
+from chia.consensus.fork_order import calculate_fork_tie_key, exact_tie_order
 from chia.consensus.full_block_to_block_record import block_to_block_record
 from chia.consensus.generator_tools import get_block_header
 from chia.consensus.get_block_challenge import pre_sp_tx_block_height
@@ -349,7 +350,8 @@ class Blockchain:
         required_iters = pre_validation_result.required_iters
         if pre_validation_result.error is not None:
             return AddBlockResult.INVALID_BLOCK, Err(pre_validation_result.error), None
-        assert required_iters is not None
+        if required_iters is None:
+            raise RuntimeError("successful block prevalidation did not return required iterations")
 
         header_hash: bytes32 = block.header_hash
 
@@ -426,6 +428,14 @@ class Blockchain:
                 prev_ses_block=prev_ses_block,
             )
 
+        if pre_validation_result.quality_string is None:
+            raise RuntimeError("successful block prevalidation did not return proof quality")
+        candidate_tie_key = calculate_fork_tie_key(
+            block_record,
+            block.reward_chain_block.proof_of_space,
+            pre_validation_result.quality_string,
+        )
+
         # in case we fail and need to restore the blockchain state, remember the
         # peak height
         previous_peak_height = self._peak_height
@@ -435,8 +445,18 @@ class Blockchain:
             # Always add the block to the database
             async with self.block_store.transaction():
                 # Perform the DB operations to update the state, and rollback if something goes wrong
-                await self.block_store.add_full_block(header_hash, block, block_record)
-                records, state_change_summary = await self._reconsider_peak(block_record, genesis, fork_info)
+                await self.block_store.add_full_block(
+                    header_hash,
+                    block,
+                    block_record,
+                    fork_tie_key=candidate_tie_key,
+                )
+                records, state_change_summary = await self._reconsider_peak(
+                    block_record,
+                    candidate_tie_key,
+                    genesis,
+                    fork_info,
+                )
 
                 # Then update the memory cache. It is important that this is not cancelled and does not throw
                 # This is done after all async/DB operations, so there is a decreased chance of failure.
@@ -493,11 +513,45 @@ class Blockchain:
         else:
             return AddBlockResult.ADDED_AS_ORPHAN, None, None
 
+    async def _candidate_beats_peak(
+        self,
+        candidate: BlockRecord,
+        candidate_tie_key: bytes32,
+        peak: BlockRecord,
+    ) -> bool:
+        if candidate.weight != peak.weight:
+            return candidate.weight > peak.weight
+        if candidate.total_iters != peak.total_iters:
+            return candidate.total_iters < peak.total_iters
+
+        activated = min(candidate.height, peak.height) >= self.constants.FORK_TIE_BREAK_HEIGHT
+        peak_tie_key = await self.block_store.get_fork_order_key(peak.header_hash) if activated else None
+        log.info(
+            "exact fork-choice tie candidate=%s peak=%s candidate_key=%s peak_key=%s activated=%s",
+            candidate.header_hash,
+            peak.header_hash,
+            candidate_tie_key,
+            peak_tie_key,
+            activated,
+        )
+
+        # Preserve arrival-order semantics before coordinated activation.
+        if not activated:
+            return False
+        if peak_tie_key is None:
+            raise RuntimeError(f"missing fork-order key for peak {peak.header_hash}")
+
+        return exact_tie_order(candidate_tie_key, candidate.header_hash) < exact_tie_order(
+            peak_tie_key,
+            peak.header_hash,
+        )
+
     # only to be called under short fork points
     # under deep reorgs this can cause OOM
     async def _reconsider_peak(
         self,
         block_record: BlockRecord,
+        candidate_tie_key: bytes32,
         genesis: bool,
         fork_info: ForkInfo,
     ) -> tuple[list[BlockRecord], StateChangeSummary | None]:
@@ -515,11 +569,7 @@ class Blockchain:
             return [], None
 
         if peak is not None:
-            if block_record.weight < peak.weight:
-                # This is not a heavier block than the heaviest we have seen, so we don't change the coin set
-                return [], None
-            if block_record.weight == peak.weight and peak.total_iters <= block_record.total_iters:
-                # this is an equal weight block but our peak has lower iterations, so we dont change the coin set
+            if not await self._candidate_beats_peak(block_record, candidate_tie_key, peak):
                 return [], None
             if block_record.weight == peak.weight:
                 log.info(
@@ -812,6 +862,8 @@ class Blockchain:
         if error_code is not None:
             return PreValidationResult(uint16(error_code.value), None, None, None, uint32(0))
 
+        # Unfinished blocks are never passed to add_block(), so their proof
+        # quality does not enter peak ordering.
         return PreValidationResult(None, None, required_iters, conds, uint32(0))
 
     def contains_block(self, header_hash: bytes32, height: uint32) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from chia_rs import FullBlock, SpendBundleConditions
+from chia_rs.sized_bytes import bytes32
 from chia_rs.sized_ints import uint32, uint64
 
 from chia.consensus.augmented_chain import AugmentedBlockchain
@@ -78,7 +79,7 @@ async def _validate_and_add_block(
         else:
             # fake the signature validation. Just say True here.
             conds = SpendBundleConditions([], 0, 0, 0, None, None, [], 0, 0, 0, True, 0, 0, 0, 0, 0)
-        results = PreValidationResult(None, None, uint64(1), conds, uint32(0))
+        results = PreValidationResult(None, None, uint64(1), conds, uint32(0), bytes32.zeros)
     else:
         future = await pre_validate_block(
             blockchain.constants,

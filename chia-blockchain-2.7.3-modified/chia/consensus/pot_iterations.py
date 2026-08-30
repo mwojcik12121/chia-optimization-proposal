@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from chia_rs import ConsensusConstants, PlotParam, ProofOfSpace
 from chia_rs.sized_bytes import bytes32
 from chia_rs.sized_ints import uint8, uint32, uint64
@@ -7,6 +9,14 @@ from chia_rs.sized_ints import uint8, uint32, uint64
 from chia.consensus.pos_quality import _expected_plot_size
 from chia.types.blockchain_format.proof_of_space import verify_and_get_quality_string
 from chia.util.hash import std_hash
+
+
+@dataclass(frozen=True)
+class ValidatedPospace:
+    """Proof quality and iterations derived from the same validation."""
+
+    quality: bytes32
+    required_iters: uint64
 
 
 def is_overflow_block(constants: ConsensusConstants, signage_point_index: uint8) -> bool:
@@ -57,6 +67,29 @@ def validate_pospace_and_get_required_iters(
     prev_transaction_block_height: uint32,  # this is the height of the last tx block before the current block SP
     height_agnostic: bool = False,
 ) -> uint64 | None:
+    result = validate_pospace_and_get_quality_and_iters(
+        constants,
+        proof_of_space,
+        challenge,
+        cc_sp_hash,
+        height,
+        difficulty,
+        prev_transaction_block_height,
+        height_agnostic,
+    )
+    return None if result is None else result.required_iters
+
+
+def validate_pospace_and_get_quality_and_iters(
+    constants: ConsensusConstants,
+    proof_of_space: ProofOfSpace,
+    challenge: bytes32,
+    cc_sp_hash: bytes32,
+    height: uint32,
+    difficulty: uint64,
+    prev_transaction_block_height: uint32,
+    height_agnostic: bool = False,
+) -> ValidatedPospace | None:
     q_str: bytes32 | None = verify_and_get_quality_string(
         proof_of_space,
         constants,
@@ -69,12 +102,15 @@ def validate_pospace_and_get_required_iters(
     if q_str is None:
         return None
 
-    return calculate_iterations_quality(
-        constants,
-        q_str,
-        proof_of_space.param(),
-        difficulty,
-        cc_sp_hash,
+    return ValidatedPospace(
+        quality=q_str,
+        required_iters=calculate_iterations_quality(
+            constants,
+            q_str,
+            proof_of_space.param(),
+            difficulty,
+            cc_sp_hash,
+        ),
     )
 
 

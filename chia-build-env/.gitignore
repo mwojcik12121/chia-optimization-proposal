@@ -1,0 +1,3 @@
+bin/*.tar.gz
+src/*
+!src/README.md

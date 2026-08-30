@@ -211,12 +211,12 @@ def passes_plot_filter(
 def calculate_prefix_bits(constants: ConsensusConstants, height: uint32, plot_param: PlotParam) -> int:
     if plot_param.strength_v2 is not None:
         prefix_bits = int(constants.NUMBER_ZERO_BITS_PLOT_FILTER_V2)
-        if height >= constants.PLOT_FILTER_V2_THIRD_ADJUSTMENT_HEIGHT:
-            prefix_bits -= 3
-        elif height >= constants.PLOT_FILTER_V2_SECOND_ADJUSTMENT_HEIGHT:
-            prefix_bits -= 2
-        elif height >= constants.PLOT_FILTER_V2_FIRST_ADJUSTMENT_HEIGHT:
-            prefix_bits -= 1
+        relative_height = int(height) - int(constants.HARD_FORK2_HEIGHT)
+        if relative_height > 0:
+            for index, offset in enumerate(constants.PLOT_FILTER_V2_RELATIVE_HEIGHT):
+                if relative_height >= int(offset):
+                    prefix_bits -= len(constants.PLOT_FILTER_V2_RELATIVE_HEIGHT) - index
+                    break
         return max(0, prefix_bits)
 
     prefix_bits = int(constants.NUMBER_ZERO_BITS_PLOT_FILTER_V1)

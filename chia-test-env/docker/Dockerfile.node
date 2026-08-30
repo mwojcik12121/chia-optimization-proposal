@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+
+ARG ASSETS_IMAGE=sia-runtime200-assets:local
+ARG BASE_IMAGE=sia-runtime200-base:local
+FROM ${ASSETS_IMAGE} AS assets
+FROM ${BASE_IMAGE}
+
+ARG NODE_ID
+ARG NODE_ROLE
+
+ENV NODE_ID=${NODE_ID} \
+    NODE_NAME=node${NODE_ID} \
+    NODE_ROLE=${NODE_ROLE}
+
+RUN --mount=type=bind,from=assets,source=/opt/sia,target=/mnt/sia,readonly \
+    set -eux; \
+    test -n "${NODE_ID}"; \
+    test -n "${NODE_ROLE}"; \
+    mkdir -p /opt/sia/node-ssl /opt/sia/plots; \
+    cp -a "/mnt/sia/certs/node${NODE_ID}/ssl/." /opt/sia/node-ssl/; \
+    if [ "${NODE_ROLE}" = farmer ]; then \
+      cp -a "/mnt/sia/plots/node${NODE_ID}/." /opt/sia/plots/; \
+    fi
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/sia-entrypoint"]
