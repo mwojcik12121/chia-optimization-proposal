@@ -61,6 +61,19 @@ def test_mainnet() -> None:
     assert overrides == {}
 
 
-def test_fork_tie_break_height_cannot_be_locally_overridden() -> None:
+def test_mainnet_fork_tie_break_height_cannot_be_locally_overridden() -> None:
     with pytest.raises(ValueError, match="fixed by consensus"):
         update_testnet_overrides("mainnet", {"FORK_TIE_BREAK_HEIGHT": 0})
+
+
+def test_public_testnet_fork_tie_break_height_cannot_be_locally_overridden() -> None:
+    with pytest.raises(ValueError, match="fixed by consensus"):
+        update_testnet_overrides("testnet11", {"FORK_TIE_BREAK_HEIGHT": 0})
+
+
+def test_private_network_can_coordinate_an_earlier_fork_tie_break_height() -> None:
+    overrides: dict[str, Any] = {"FORK_TIE_BREAK_HEIGHT": 200}
+
+    update_testnet_overrides("private200", overrides)
+
+    assert overrides == {"FORK_TIE_BREAK_HEIGHT": 200, "TESTNET": True}

@@ -304,6 +304,7 @@ class Blockchain:
         fork_info: ForkInfo,
         prev_ses_block: BlockRecord | None = None,
         block_record: BlockRecord | None = None,
+        candidate_source: str = "current_machine",
     ) -> tuple[AddBlockResult, Err | None, StateChangeSummary | None]:
         """
         This method must be called under the blockchain lock
@@ -317,6 +318,9 @@ class Blockchain:
             pre_validation_result: A result of successful pre validation
             fork_info: Information about the fork chain this block is part of,
                to make validation more efficient. This is an in-out parameter.
+            candidate_source: A diagnostic description of where the candidate
+                arrived from. It is used only in fork tie-break logging and has
+                no effect on consensus.
 
         Returns:
             The result of adding the block to the blockchain (NEW_PEAK, ADDED_AS_ORPHAN, INVALID_BLOCK,
@@ -456,6 +460,7 @@ class Blockchain:
                     candidate_tie_key,
                     genesis,
                     fork_info,
+                    candidate_source,
                 )
 
                 # Then update the memory cache. It is important that this is not cancelled and does not throw
@@ -518,6 +523,7 @@ class Blockchain:
         candidate: BlockRecord,
         candidate_tie_key: bytes32,
         peak: BlockRecord,
+        candidate_source: str = "current_machine",
     ) -> bool:
         if candidate.weight != peak.weight:
             return candidate.weight > peak.weight
@@ -525,26 +531,73 @@ class Blockchain:
             return candidate.total_iters < peak.total_iters
 
         activated = min(candidate.height, peak.height) >= self.constants.FORK_TIE_BREAK_HEIGHT
-        peak_tie_key = await self.block_store.get_fork_order_key(peak.header_hash) if activated else None
-        log.info(
-            "exact fork-choice tie candidate=%s peak=%s candidate_key=%s peak_key=%s activated=%s",
-            candidate.header_hash,
-            peak.header_hash,
-            candidate_tie_key,
-            peak_tie_key,
-            activated,
-        )
-
         # Preserve arrival-order semantics before coordinated activation.
         if not activated:
+            log.warning(
+                "FORK_TIE_BREAK active=false decision=keep_current_peak "
+                "reason=pre_activation_arrival_order activation_height=%s "
+                "selected_role=current_peak selected_source=current_machine selected_hash=%s "
+                "incoming_candidate_source=%s incoming_candidate_hash=%s incoming_candidate_tie_key=%s",
+                self.constants.FORK_TIE_BREAK_HEIGHT,
+                peak.header_hash.hex(),
+                candidate_source,
+                candidate.header_hash.hex(),
+                candidate_tie_key.hex(),
+            )
             return False
+
+        peak_tie_key = await self.block_store.get_fork_order_key(peak.header_hash)
         if peak_tie_key is None:
+            log.error(
+                "FORK_TIE_BREAK active=true decision=error reason=missing_current_peak_tie_key "
+                "incoming_candidate_source=%s incoming_candidate_hash=%s incoming_candidate_tie_key=%s "
+                "current_peak_source=current_machine current_peak_hash=%s",
+                candidate_source,
+                candidate.header_hash.hex(),
+                candidate_tie_key.hex(),
+                peak.header_hash.hex(),
+            )
             raise RuntimeError(f"missing fork-order key for peak {peak.header_hash}")
 
-        return exact_tie_order(candidate_tie_key, candidate.header_hash) < exact_tie_order(
+        candidate_wins = exact_tie_order(candidate_tie_key, candidate.header_hash) < exact_tie_order(
             peak_tie_key,
             peak.header_hash,
         )
+        decision_reason = "tie_break_key" if candidate_tie_key != peak_tie_key else "header_hash_fallback"
+        if candidate_wins:
+            decision = "replace_current_peak"
+            selected_role = "incoming_candidate"
+            selected_source = candidate_source
+            selected_hash = candidate.header_hash
+            selected_tie_key = candidate_tie_key
+        else:
+            decision = "keep_current_peak"
+            selected_role = "current_peak"
+            selected_source = "current_machine"
+            selected_hash = peak.header_hash
+            selected_tie_key = peak_tie_key
+
+        # WARNING is intentional: the default Chia log level is WARNING, and
+        # exact fork-choice ties are rare, operationally important events.
+        log.warning(
+            "FORK_TIE_BREAK active=true decision=%s reason=%s "
+            "ordering_rule=lowest_lexicographic_tie_key_then_header_hash_wins "
+            "selected_role=%s selected_source=%s selected_hash=%s selected_tie_key=%s "
+            "incoming_candidate_source=%s incoming_candidate_hash=%s incoming_candidate_tie_key=%s "
+            "current_peak_source=current_machine current_peak_hash=%s current_peak_tie_key=%s",
+            decision,
+            decision_reason,
+            selected_role,
+            selected_source,
+            selected_hash.hex(),
+            selected_tie_key.hex(),
+            candidate_source,
+            candidate.header_hash.hex(),
+            candidate_tie_key.hex(),
+            peak.header_hash.hex(),
+            peak_tie_key.hex(),
+        )
+        return candidate_wins
 
     # only to be called under short fork points
     # under deep reorgs this can cause OOM
@@ -554,6 +607,7 @@ class Blockchain:
         candidate_tie_key: bytes32,
         genesis: bool,
         fork_info: ForkInfo,
+        candidate_source: str,
     ) -> tuple[list[BlockRecord], StateChangeSummary | None]:
         """
         When a new block is added, this is called, to check if the new block is the new peak of the chain.
@@ -569,7 +623,7 @@ class Blockchain:
             return [], None
 
         if peak is not None:
-            if not await self._candidate_beats_peak(block_record, candidate_tie_key, peak):
+            if not await self._candidate_beats_peak(block_record, candidate_tie_key, peak, candidate_source):
                 return [], None
             if block_record.weight == peak.weight:
                 log.info(

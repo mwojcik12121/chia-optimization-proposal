@@ -115,11 +115,15 @@ DEFAULT_CONSTANTS = ConsensusConstants(
 
 
 def update_testnet_overrides(network_id: str, overrides: dict[str, Any]) -> None:
-    # Configuration may expose the canonical activation value for inspection,
-    # but an operator must not be able to choose a different consensus rule.
+    # Public-network configuration may expose the canonical activation value
+    # for inspection, but an operator must not be able to choose a different
+    # consensus rule. The isolated private200 lab network uses an earlier,
+    # coordinated height so the rule can be exercised in integration tests.
     configured_fork_tie_break_height = overrides.get("FORK_TIE_BREAK_HEIGHT")
-    if configured_fork_tie_break_height is not None and int(configured_fork_tie_break_height) != int(
-        DEFAULT_CONSTANTS.FORK_TIE_BREAK_HEIGHT
+    if (
+        network_id != "private200"
+        and configured_fork_tie_break_height is not None
+        and int(configured_fork_tie_break_height) != int(DEFAULT_CONSTANTS.FORK_TIE_BREAK_HEIGHT)
     ):
         raise ValueError(
             "FORK_TIE_BREAK_HEIGHT is fixed by consensus "

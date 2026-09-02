@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-export CHIA_ROOT=/opt/sia/plot-root
-export CHIA_KEYS_ROOT=/opt/sia/plot-keys
-readonly FINAL_DIR=/opt/sia/plot-output
-readonly TEMP_DIR=/opt/sia/plot-temp
-readonly MNEMONIC_FILE=/opt/sia/lab-mnemonic.txt
+export CHIA_ROOT=/opt/chia/plot-root
+export CHIA_KEYS_ROOT=/opt/chia/plot-keys
+readonly FINAL_DIR=/opt/chia/plot-output
+readonly TEMP_DIR=/opt/chia/plot-temp
+readonly MNEMONIC_FILE=/opt/chia/lab-mnemonic.txt
 
 create_plots() {
   local index node
   local -a plots=()
 
-  rm -rf "${CHIA_ROOT}" "${CHIA_KEYS_ROOT}" "${FINAL_DIR}" "${TEMP_DIR}" /opt/sia/plots
-  mkdir -p "${CHIA_ROOT}" "${CHIA_KEYS_ROOT}" "${FINAL_DIR}" "${TEMP_DIR}" /opt/sia/plots
+  rm -rf "${CHIA_ROOT}" "${CHIA_KEYS_ROOT}" "${FINAL_DIR}" "${TEMP_DIR}" /opt/chia/plots
+  mkdir -p "${CHIA_ROOT}" "${CHIA_KEYS_ROOT}" "${FINAL_DIR}" "${TEMP_DIR}" /opt/chia/plots
 
   chia init >/dev/null
   chia keys add --filename "${MNEMONIC_FILE}" --label private200 >/dev/null
   chia init --fix-ssl-permissions >/dev/null
   chia plots create \
-    --size 18 \
+    --size 25 \
     --override-k \
-    --num 3 \
+    --num 4 \
     --buffer 256 \
     --num_threads 2 \
     --buckets 64 \
@@ -29,15 +29,15 @@ create_plots() {
     --exclude_final_dir
 
   mapfile -d '' -t plots < <(find "${FINAL_DIR}" -maxdepth 1 -type f -name '*.plot' -print0 | sort -z)
-  (( ${#plots[@]} == 3 )) || {
-    printf '[plot-assets][ERROR] expected three plots\n' >&2
+  (( ${#plots[@]} == 4 )) || {
+    printf '[plot-assets][ERROR] expected four plots\n' >&2
     return 1
   }
 
-  for index in 0 1 2; do
+  for index in 0 1 2 3; do
     printf -v node 'node%02d' "$((index + 1))"
-    mkdir -p "/opt/sia/plots/${node}"
-    mv "${plots[${index}]}" "/opt/sia/plots/${node}/"
+    mkdir -p "/opt/chia/plots/${node}"
+    mv "${plots[${index}]}" "/opt/chia/plots/${node}/"
   done
 
   rm -rf "${CHIA_ROOT}" "${CHIA_KEYS_ROOT}" "${FINAL_DIR}" "${TEMP_DIR}"

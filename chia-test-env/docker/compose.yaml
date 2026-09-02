@@ -1,4 +1,4 @@
-name: "${COMPOSE_PROJECT_NAME:-sia-runtime200-test}"
+name: "${COMPOSE_PROJECT_NAME:-chia-runtime200-test}"
 
 x-common-node: &common-node
   restart: "no"
@@ -6,7 +6,16 @@ x-common-node: &common-node
   command: ["${SCENARIO:-1}"]
   environment:
     SCENARIO: "${SCENARIO:-1}"
-    SCENARIO_NODES: "${SCENARIO_NODES:-node01,node02,node03,node04,node05,node06,node07,node08,node09}"
+    SCENARIO_NODES: "${SCENARIO_NODES:-node01,node02,node03,node04,node06,node07,node08,node09}"
+    FARMER_NODES: "${FARMER_NODES:-node01,node02,node03,node04}"
+    TIMELORD_NODES: "${TIMELORD_NODES:-node06,node07}"
+    VDF_NODES: "${VDF_NODES:-node08,node09}"
+    VDF_CLIENTS_PER_TIMELORD: "${VDF_CLIENTS_PER_TIMELORD:-3}"
+    TIE_TIMING_A_NODES: "${TIE_TIMING_A_NODES:-node06,node08}"
+    TIE_TIMING_B_NODES: "${TIE_TIMING_B_NODES:-node07,node09}"
+    TIE_COORDINATOR: "${TIE_COORDINATOR:-node09}"
+    TIE_MAX_ATTEMPTS: "${TIE_MAX_ATTEMPTS:-12}"
+    TIE_MAX_CAPTURE_GAP_MS: "${TIE_MAX_CAPTURE_GAP_MS:-1000}"
     BOOTSTRAP_TIMEOUT: "${BOOTSTRAP_TIMEOUT:-1800}"
     TIE_TIMEOUT: "${TIE_TIMEOUT:-1200}"
     TZ: "${TZ:-:/etc/localtime}"
@@ -21,190 +30,180 @@ x-common-node: &common-node
   volumes:
     - /etc/localtime:/etc/localtime:ro
   networks:
-    sia_internal: {}
+    chia_internal: {}
 
 x-farmer-resources: &farmer-resources
-  cpu_period: 210000
-  cpu_quota: 80000
-  mem_limit: 1227133513
-  memswap_limit: 1227133513
+  cpu_period: 100000
+  cpu_quota: 100000
+  mem_limit: 3000000000
+  memswap_limit: 3000000000
   storage_opt:
-    size: "166666666668"
+    size: "150000000000"
 
-x-timing-resources: &timing-resources
-  cpu_period: 210000
-  cpu_quota: 240000
-  mem_limit: 3681400539
-  memswap_limit: 3681400539
+x-timelord-resources: &timelord-resources
+  cpu_period: 100000
+  cpu_quota: 125000
+  mem_limit: 3000000000
+  memswap_limit: 3000000000
   storage_opt:
-    size: "41666666666"
+    size: "37500000000"
+
+x-vdf-resources: &vdf-resources
+  cpu_period: 100000
+  cpu_quota: 75000
+  mem_limit: 3000000000
+  memswap_limit: 3000000000
+  storage_opt:
+    size: "37500000000"
 
 services:
   node01:
     <<: [*common-node, *farmer-resources]
-    image: "sia-runtime200-node01:${RUNTIME_IMAGE_TAG:-local}"
+    image: "chia-runtime200-node01:${RUNTIME_IMAGE_TAG:-local}"
     build:
       context: ..
       network: none
       pull: false
       dockerfile: docker/Dockerfile.node
       args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        ASSETS_IMAGE: "chia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "chia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
         NODE_ID: "01"
         NODE_ROLE: farmer
     hostname: node01
     networks:
-      sia_internal:
+      chia_internal:
         ipv4_address: 172.28.0.11
 
   node02:
     <<: [*common-node, *farmer-resources]
-    image: "sia-runtime200-node02:${RUNTIME_IMAGE_TAG:-local}"
+    image: "chia-runtime200-node02:${RUNTIME_IMAGE_TAG:-local}"
     build:
       context: ..
       network: none
       pull: false
       dockerfile: docker/Dockerfile.node
       args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        ASSETS_IMAGE: "chia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "chia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
         NODE_ID: "02"
         NODE_ROLE: farmer
     hostname: node02
     networks:
-      sia_internal:
+      chia_internal:
         ipv4_address: 172.28.0.12
 
   node03:
     <<: [*common-node, *farmer-resources]
-    image: "sia-runtime200-node03:${RUNTIME_IMAGE_TAG:-local}"
+    image: "chia-runtime200-node03:${RUNTIME_IMAGE_TAG:-local}"
     build:
       context: ..
       network: none
       pull: false
       dockerfile: docker/Dockerfile.node
       args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        ASSETS_IMAGE: "chia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "chia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
         NODE_ID: "03"
         NODE_ROLE: farmer
     hostname: node03
     networks:
-      sia_internal:
+      chia_internal:
         ipv4_address: 172.28.0.13
 
   node04:
-    <<: [*common-node, *timing-resources]
-    image: "sia-runtime200-node04:${RUNTIME_IMAGE_TAG:-local}"
+    <<: [*common-node, *farmer-resources]
+    image: "chia-runtime200-node04:${RUNTIME_IMAGE_TAG:-local}"
     build:
       context: ..
       network: none
       pull: false
       dockerfile: docker/Dockerfile.node
       args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        ASSETS_IMAGE: "chia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "chia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
         NODE_ID: "04"
-        NODE_ROLE: timelord
+        NODE_ROLE: farmer
     hostname: node04
     networks:
-      sia_internal:
+      chia_internal:
         ipv4_address: 172.28.0.14
 
-  node05:
-    <<: [*common-node, *timing-resources]
-    image: "sia-runtime200-node05:${RUNTIME_IMAGE_TAG:-local}"
-    build:
-      context: ..
-      network: none
-      pull: false
-      dockerfile: docker/Dockerfile.node
-      args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
-        NODE_ID: "05"
-        NODE_ROLE: vdf
-    hostname: node05
-    networks:
-      sia_internal:
-        ipv4_address: 172.28.0.15
-
   node06:
-    <<: [*common-node, *timing-resources]
-    image: "sia-runtime200-node06:${RUNTIME_IMAGE_TAG:-local}"
+    <<: [*common-node, *timelord-resources]
+    image: "chia-runtime200-node06:${RUNTIME_IMAGE_TAG:-local}"
     build:
       context: ..
       network: none
       pull: false
       dockerfile: docker/Dockerfile.node
       args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        ASSETS_IMAGE: "chia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "chia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
         NODE_ID: "06"
-        NODE_ROLE: vdf
+        NODE_ROLE: timelord
     hostname: node06
     networks:
-      sia_internal:
+      chia_internal:
         ipv4_address: 172.28.0.16
 
   node07:
-    <<: [*common-node, *timing-resources]
-    image: "sia-runtime200-node07:${RUNTIME_IMAGE_TAG:-local}"
+    <<: [*common-node, *timelord-resources]
+    image: "chia-runtime200-node07:${RUNTIME_IMAGE_TAG:-local}"
     build:
       context: ..
       network: none
       pull: false
       dockerfile: docker/Dockerfile.node
       args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        ASSETS_IMAGE: "chia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "chia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
         NODE_ID: "07"
         NODE_ROLE: timelord
     hostname: node07
     networks:
-      sia_internal:
+      chia_internal:
         ipv4_address: 172.28.0.17
 
   node08:
-    <<: [*common-node, *timing-resources]
-    image: "sia-runtime200-node08:${RUNTIME_IMAGE_TAG:-local}"
+    <<: [*common-node, *vdf-resources]
+    image: "chia-runtime200-node08:${RUNTIME_IMAGE_TAG:-local}"
     build:
       context: ..
       network: none
       pull: false
       dockerfile: docker/Dockerfile.node
       args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        ASSETS_IMAGE: "chia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "chia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
         NODE_ID: "08"
         NODE_ROLE: vdf
     hostname: node08
     networks:
-      sia_internal:
+      chia_internal:
         ipv4_address: 172.28.0.18
 
   node09:
-    <<: [*common-node, *timing-resources]
-    image: "sia-runtime200-node09:${RUNTIME_IMAGE_TAG:-local}"
+    <<: [*common-node, *vdf-resources]
+    image: "chia-runtime200-node09:${RUNTIME_IMAGE_TAG:-local}"
     build:
       context: ..
       network: none
       pull: false
       dockerfile: docker/Dockerfile.node
       args:
-        ASSETS_IMAGE: "sia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
-        BASE_IMAGE: "sia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
+        ASSETS_IMAGE: "chia-runtime200-assets:${RUNTIME_IMAGE_TAG:-local}"
+        BASE_IMAGE: "chia-runtime200-base:${RUNTIME_IMAGE_TAG:-local}"
         NODE_ID: "09"
         NODE_ROLE: vdf
     hostname: node09
     networks:
-      sia_internal:
+      chia_internal:
         ipv4_address: 172.28.0.19
 
 networks:
-  sia_internal:
-    name: "${COMPOSE_PROJECT_NAME:-sia-runtime200-test}_internal"
+  chia_internal:
+    name: "${COMPOSE_PROJECT_NAME:-chia-runtime200-test}_internal"
     driver: bridge
     internal: true
     attachable: false

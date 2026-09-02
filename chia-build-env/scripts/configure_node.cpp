@@ -104,36 +104,33 @@ YAML::Node peerList(const std::vector<std::string>& hosts, const int port = 8444
 }
 
 std::vector<std::string> fullNodePeers(const std::string& nodeId) {
-    if (nodeId == "01") {
-        return {"node02", "node03"};
+    std::vector<std::string> peers;
+    for (const std::string& farmer : {"node01", "node02", "node03", "node04"}) {
+        if (farmer != "node" + nodeId) {
+            peers.push_back(farmer);
+        }
     }
-    if (nodeId == "02") {
-        return {"node01", "node03"};
-    }
-    if (nodeId == "03") {
-        return {"node01", "node02"};
-    }
-    return {"node01"};
+    return peers;
 }
 
 std::string timelordHost(const std::string& nodeId) {
-    if (nodeId == "07") {
+    if (nodeId == "06" || nodeId == "07") {
         return "127.0.0.1";
     }
-    if (nodeId == "08" || nodeId == "09") {
+    if (nodeId == "08") {
+        return "node06";
+    }
+    if (nodeId == "09") {
         return "node07";
     }
-    if (nodeId == "04") {
-        return "127.0.0.1";
-    }
-    return "node04";
+    return "node06";
 }
 
 std::vector<std::string> vdfClientIps(const std::string& nodeId) {
-    if (nodeId == "07" || nodeId == "08" || nodeId == "09") {
-        return {"127.0.0.1", "172.28.0.18", "172.28.0.19"};
+    if (nodeId == "07" || nodeId == "09") {
+        return {"127.0.0.1", "172.28.0.19"};
     }
-    return {"127.0.0.1", "172.28.0.15", "172.28.0.16"};
+    return {"127.0.0.1", "172.28.0.18"};
 }
 
 void configureConsensus(YAML::Node& root, const std::string& prefarmPuzzleHash) {
@@ -147,23 +144,34 @@ void configureConsensus(YAML::Node& root, const std::string& prefarmPuzzleHash) 
     constants["MIN_PLOT_SIZE_V1"] = 18;
     constants["PLOT_SIZE_V2"] = 20;
     constants["MIN_BLOCKS_PER_CHALLENGE_BLOCK"] = 12;
-    constants["DIFFICULTY_STARTING"] = 1024;
-    constants["DISCRIMINANT_SIZE_BITS"] = 16;
+    // A small discrete required-iterations range makes independently produced
+    // blocks collide often enough for the exact fork tie-break scenario.
+    constants["DIFFICULTY_STARTING"] = 128;
+    // Use production-size VDF discriminants so the configured 150k IPS
+    // estimate is meaningful and the two-second signage-point cadence holds.
+    constants["DISCRIMINANT_SIZE_BITS"] = 1024;
     constants["SUB_EPOCH_BLOCKS"] = 170;
     constants["WEIGHT_PROOF_THRESHOLD"] = 2;
     constants["WEIGHT_PROOF_RECENT_BLOCKS"] = 500;
-    constants["DIFFICULTY_CONSTANT_FACTOR"] = 33554432;
+    // Keep every accepted K25 quality at one required iteration on private200.
+    // Distinct proofs at the same signage point therefore have equal
+    // total_iters and reach the new deterministic fork-order comparison.
+    constants["DIFFICULTY_CONSTANT_FACTOR"] = 1;
     constants["NUM_SPS_SUB_SLOT"] = 16;
     constants["MAX_SUB_SLOT_BLOCKS"] = 50;
     constants["EPOCH_BLOCKS"] = 340;
     constants["BLOCKS_CACHE_SIZE"] = 1020;
-    constants["SUB_SLOT_TIME_TARGET"] = 1;
-    constants["SUB_SLOT_ITERS_STARTING"] = 150000;
-    constants["NUMBER_ZERO_BITS_PLOT_FILTER_V1"] = 3;
-    constants["NUMBER_ZERO_BITS_PLOT_FILTER_V2"] = 3;
+    // With one required iteration and no plot filter, a single plot can make a
+    // block at every signage point. Space those points two seconds apart so
+    // the control loop can freeze exactly one child before the next point.
+    constants["SUB_SLOT_TIME_TARGET"] = 32;
+    constants["SUB_SLOT_ITERS_STARTING"] = 4800000;
+    constants["NUMBER_ZERO_BITS_PLOT_FILTER_V1"] = 0;
+    constants["NUMBER_ZERO_BITS_PLOT_FILTER_V2"] = 0;
     constants["MAX_FUTURE_TIME2"] = 864000;
     constants["MEMPOOL_BLOCK_BUFFER"] = 6;
     constants["PLOT_V1_PHASE_OUT_EPOCH_BITS"] = 3;
+    constants["FORK_TIE_BREAK_HEIGHT"] = 200;
     constants["TESTNET"] = true;
 
     root["network_overrides"]["constants"]["private200"] = constants;
@@ -206,8 +214,8 @@ void configureFullNode(YAML::Node& root, const std::string& nodeId) {
     node["enable_upnp"] = false;
     node["peer_connect_interval"] = 2;
     node["peer_connect_timeout"] = 5;
-    node["target_peer_count"] = 8;
-    node["target_outbound_peer_count"] = 2;
+    node["target_peer_count"] = 12;
+    node["target_outbound_peer_count"] = 4;
     node["max_sync_wait"] = 5;
     node["sync_blocks_behind_threshold"] = 20;
     node["short_sync_blocks_behind_threshold"] = 10;
@@ -251,8 +259,7 @@ void configureFarmerAndHarvester(YAML::Node& root, const std::string& rewardAddr
 }
 
 void configureTimelord(YAML::Node& root, const std::string& nodeId) {
-    const std::string fullNodeHost = (nodeId == "07" || nodeId == "08" || nodeId == "09") ? "node02" : "node01";
-    root["timelord"]["full_node_peers"] = peerList({fullNodeHost});
+    root["timelord"]["full_node_peers"] = peerList({"node01", "node02", "node03", "node04"});
     root["timelord"]["vdf_server"]["host"] = "0.0.0.0";
     root["timelord"]["vdf_server"]["port"] = 8000;
     root["timelord"]["vdf_clients"]["ip"] = stringSequence(vdfClientIps(nodeId));
@@ -265,7 +272,9 @@ void configureTimelord(YAML::Node& root, const std::string& nodeId) {
 
     root["timelord_launcher"]["host"] = timelordHost(nodeId);
     root["timelord_launcher"]["port"] = 8000;
-    root["timelord_launcher"]["process_count"] = 1;
+    // Each timelord needs clients for the challenge, reward, and infused
+    // challenge chains. Run two locally and one in the paired VDF container.
+    root["timelord_launcher"]["process_count"] = (nodeId == "06" || nodeId == "07") ? 2 : 1;
 }
 
 void clearUnusedDiscovery(YAML::Node& root) {
@@ -306,7 +315,7 @@ void validateRole(const std::string& role) {
 int main(const int argc, char* argv[]) {
     try {
         if (argc != 5) {
-            std::cerr << "Usage: sia-config CONFIG_PATH NODE_ID ROLE PREFARM_ADDRESS\n";
+            std::cerr << "Usage: chia-config CONFIG_PATH NODE_ID ROLE PREFARM_ADDRESS\n";
             return 64;
         }
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -126,6 +127,84 @@ async def test_exact_tie_converges_after_activation() -> None:
         peak_key,
         cast(Any, record_1),
     )
+
+
+@pytest.mark.parametrize(
+    ("candidate_key_byte", "peak_key_byte", "expected_decision", "expected_role", "expected_source"),
+    [
+        (0x10, 0x20, "replace_current_peak", "incoming_candidate", "transport_peer(node_id=peer-01)"),
+        (0x20, 0x10, "keep_current_peak", "current_peak", "current_machine"),
+    ],
+)
+@pytest.mark.anyio
+async def test_exact_tie_log_exposes_ordering_keys_and_selected_node(
+    candidate_key_byte: int,
+    peak_key_byte: int,
+    expected_decision: str,
+    expected_role: str,
+    expected_source: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    candidate = _record(1)
+    peak = _record(2)
+    candidate_key = bytes32(bytes([candidate_key_byte]) * 32)
+    peak_key = bytes32(bytes([peak_key_byte]) * 32)
+    candidate_source = "transport_peer(node_id=peer-01)"
+    expected_selected_hash = candidate.header_hash if expected_role == "incoming_candidate" else peak.header_hash
+    expected_selected_key = candidate_key if expected_role == "incoming_candidate" else peak_key
+    blockchain = SimpleNamespace(
+        constants=SimpleNamespace(FORK_TIE_BREAK_HEIGHT=100),
+        block_store=_KeyStore(peak_key),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="chia.consensus.blockchain"):
+        await Blockchain._candidate_beats_peak(
+            cast(Any, blockchain),
+            cast(Any, candidate),
+            candidate_key,
+            cast(Any, peak),
+            candidate_source,
+        )
+
+    message = caplog.messages[-1]
+    assert "FORK_TIE_BREAK active=true" in message
+    assert f"decision={expected_decision}" in message
+    assert "reason=tie_break_key" in message
+    assert f"selected_role={expected_role}" in message
+    assert f"selected_source={expected_source}" in message
+    assert f"selected_hash={expected_selected_hash.hex()}" in message
+    assert f"selected_tie_key={expected_selected_key.hex()}" in message
+    assert f"incoming_candidate_hash={candidate.header_hash.hex()}" in message
+    assert f"incoming_candidate_tie_key={candidate_key.hex()}" in message
+    assert f"current_peak_hash={peak.header_hash.hex()}" in message
+    assert f"current_peak_tie_key={peak_key.hex()}" in message
+
+
+@pytest.mark.anyio
+async def test_exact_tie_log_identifies_header_hash_fallback(caplog: pytest.LogCaptureFixture) -> None:
+    candidate = _record(1)
+    peak = _record(2)
+    shared_key = bytes32(b"\x30" * 32)
+    blockchain = SimpleNamespace(
+        constants=SimpleNamespace(FORK_TIE_BREAK_HEIGHT=100),
+        block_store=_KeyStore(shared_key),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="chia.consensus.blockchain"):
+        assert await Blockchain._candidate_beats_peak(
+            cast(Any, blockchain),
+            cast(Any, candidate),
+            shared_key,
+            cast(Any, peak),
+            "current_machine",
+        )
+
+    message = caplog.messages[-1]
+    assert "reason=header_hash_fallback" in message
+    assert "selected_role=incoming_candidate" in message
+    assert "selected_source=current_machine" in message
+    assert f"selected_hash={candidate.header_hash.hex()}" in message
+    assert f"selected_tie_key={shared_key.hex()}" in message
 
 
 @pytest.mark.anyio

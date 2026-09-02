@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly CERT_SEED_ROOT=/opt/sia/cert-seed
-readonly CERT_WORK_ROOT=/opt/sia/cert-work
-readonly CERT_OUTPUT_ROOT=/opt/sia/certs
-readonly CERT_KEYS_ROOT=/opt/sia/cert-keys
+readonly CERT_SEED_ROOT=/opt/chia/cert-seed
+readonly CERT_WORK_ROOT=/opt/chia/cert-work
+readonly CERT_OUTPUT_ROOT=/opt/chia/certs
+readonly CERT_KEYS_ROOT=/opt/chia/cert-keys
 
 create_shared_ca() {
   export CHIA_ROOT="${CERT_SEED_ROOT}"
@@ -36,7 +36,7 @@ create_all_certificates() {
   rm -rf "${CERT_WORK_ROOT}" "${CERT_OUTPUT_ROOT}"
   mkdir -p "${CERT_WORK_ROOT}" "${CERT_OUTPUT_ROOT}"
   create_shared_ca
-  for node_id in 01 02 03 04 05 06 07 08 09; do
+  for node_id in 01 02 03 04 06 07 08 09; do
     create_node_certificates "${node_id}"
   done
   rm -rf "${CERT_SEED_ROOT}" "${CERT_WORK_ROOT}" "${CERT_KEYS_ROOT}"

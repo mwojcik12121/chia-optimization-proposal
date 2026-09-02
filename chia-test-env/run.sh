@@ -4,13 +4,16 @@ set -Eeuo pipefail
 readonly PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${PROJECT_ROOT}/controls/logging.sh"
 
-readonly NODES=(node01 node02 node03 node04 node05 node06 node07 node08 node09)
+readonly NODES=(node01 node02 node03 node04 node06 node07 node08 node09)
 readonly LOG_DIRECTORY="${PROJECT_ROOT}/logs"
 readonly COMPOSE_FILE="${PROJECT_ROOT}/docker/compose.yaml"
 readonly SCENARIO_DIRECTORY="${PROJECT_ROOT}/scenarios"
-readonly BINARY_ARCHIVE="${SIA_BINARY_ARCHIVE:-${PROJECT_ROOT}/bin/chia-binaries.tar.gz}"
-readonly BUILDER_IMAGE="${SIA_BUILDER_IMAGE:-chia-binaries:built}"
-readonly BINARY_IMAGE="${SIA_BINARY_IMAGE:-chia-binaries:built}"
+readonly BINARY_ARCHIVE="${CHIA_BINARY_ARCHIVE:-${PROJECT_ROOT}/bin/chia-binaries.tar.gz}"
+readonly BUILDER_IMAGE="${CHIA_BUILDER_IMAGE:-chia-binaries:built}"
+readonly BINARY_IMAGE="${CHIA_BINARY_IMAGE:-chia-binaries:built}"
+readonly REQUIRED_DOCKER_CPUS=8
+readonly REQUIRED_DOCKER_MEMORY_BYTES=24000000000
+readonly REQUIRED_HOST_STORAGE_BYTES=750000000000
 SCENARIO=''
 SCENARIO_NODES=''
 RUN_DATETIME=''
@@ -63,6 +66,60 @@ run_compose() {
   docker compose --file "${COMPOSE_FILE}" "$@"
 }
 
+run_require_capacity() {
+  local docker_capacity docker_cpus docker_memory host_storage
+  docker_capacity="$(docker info --format '{{.NCPU}} {{.MemTotal}}')" || {
+    test_log ERROR runner 'unable to read Docker resource capacity'
+    return 1
+  }
+  read -r docker_cpus docker_memory <<<"${docker_capacity}"
+  if [[ ! "${docker_cpus}" =~ ^[0-9]+$ || ! "${docker_memory}" =~ ^[0-9]+$ ]]; then
+    test_log ERROR runner "invalid Docker capacity: ${docker_capacity}"
+    return 1
+  fi
+  if (( docker_cpus < REQUIRED_DOCKER_CPUS )); then
+    test_log ERROR runner \
+      "Docker exposes ${docker_cpus} CPUs; at least ${REQUIRED_DOCKER_CPUS} are required"
+    return 1
+  fi
+  if (( docker_memory < REQUIRED_DOCKER_MEMORY_BYTES )); then
+    test_log ERROR runner \
+      "Docker exposes ${docker_memory} bytes of RAM; at least ${REQUIRED_DOCKER_MEMORY_BYTES} are required"
+    return 1
+  fi
+
+  host_storage="$(df -PB1 "${PROJECT_ROOT}" | awk 'NR == 2 {print $4}')"
+  if [[ ! "${host_storage}" =~ ^[0-9]+$ ]]; then
+    test_log ERROR runner 'unable to determine available host storage'
+    return 1
+  fi
+  if (( host_storage < REQUIRED_HOST_STORAGE_BYTES )); then
+    test_log ERROR runner \
+      "host has ${host_storage} bytes free; at least ${REQUIRED_HOST_STORAGE_BYTES} are required"
+    return 1
+  fi
+}
+
+run_clear_old_logs() {
+  mkdir -p "${LOG_DIRECTORY}"
+  find "${LOG_DIRECTORY}" -maxdepth 1 -type f -name '*.log' -delete
+}
+
+run_remove_stale_networks() {
+  local container_count network
+  while IFS= read -r network; do
+    [[ "${network}" =~ ^chia-runtime200-s[0-9]+-[0-9]+_internal$ ]] || continue
+    container_count="$(
+      docker network inspect --format '{{len .Containers}}' "${network}" 2>/dev/null \
+        || true
+    )"
+    [[ "${container_count}" == 0 ]] || continue
+    if docker network rm "${network}" >/dev/null 2>&1; then
+      test_log INFO runner "removed stale Docker network: ${network}"
+    fi
+  done < <(docker network ls --format '{{.Name}}')
+}
+
 run_prepare_binary_image() {
   if docker image inspect "${BINARY_IMAGE}" >/dev/null 2>&1; then
     return 0
@@ -101,7 +158,9 @@ run_save_logs() {
     output="${LOG_DIRECTORY}/${node}_scenario${SCENARIO}_${RUN_DATETIME}.log"
     container="$(run_compose ps --all --quiet "${node}" 2>/dev/null || true)"
     if [[ -n "${container}" ]]; then
-      docker logs "${container}" >"${output}" 2>&1 || true
+      docker logs "${container}" 2>&1 \
+        | "${PROJECT_ROOT}/scripts/strip-ansi.sh" >"${output}" \
+        || true
     else
       : >"${output}"
     fi
@@ -159,8 +218,8 @@ run_wait() {
 run_scenario() {
   export SCENARIO SCENARIO_NODES
   export RUNTIME_IMAGE_TAG="${RUNTIME_IMAGE_TAG:-local}"
-  export SIA_BINARY_IMAGE="${BINARY_IMAGE}"
-  export COMPOSE_PROJECT_NAME="sia-runtime200-s${SCENARIO}-$$"
+  export CHIA_BINARY_IMAGE="${BINARY_IMAGE}"
+  export COMPOSE_PROJECT_NAME="chia-runtime200-s${SCENARIO}-$$"
   RUN_DATETIME="$(date +%Y%m%d_%H%M%S)"
   mkdir -p "${LOG_DIRECTORY}"
 
@@ -183,7 +242,10 @@ main() {
   cd "${PROJECT_ROOT}"
   run_parse_arguments "$@"
   run_discover_nodes
+  run_require_capacity
   trap run_cleanup EXIT INT TERM
+  run_clear_old_logs
+  run_remove_stale_networks
   run_scenario
 }
 

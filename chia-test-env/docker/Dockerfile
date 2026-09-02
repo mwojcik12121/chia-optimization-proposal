@@ -1,5 +1,5 @@
-ARG SIA_BINARY_IMAGE=chia-binaries:built
-FROM ${SIA_BINARY_IMAGE} AS chia-binaries
+ARG CHIA_BINARY_IMAGE=chia-binaries:built
+FROM ${CHIA_BINARY_IMAGE} AS chia-binaries
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -7,28 +7,27 @@ ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1
 
 FROM chia-binaries AS assets
-COPY scripts/lab-mnemonic.txt scripts/make-plots.sh scripts/make-certs.sh /opt/sia/
-RUN chmod 0755 /opt/sia/make-plots.sh /opt/sia/make-certs.sh \
-    && /opt/sia/make-plots.sh \
-    && /opt/sia/make-certs.sh
+COPY scripts/lab-mnemonic.txt scripts/make-plots.sh scripts/make-certs.sh /opt/chia/
+RUN chmod 0755 /opt/chia/make-plots.sh /opt/chia/make-certs.sh \
+    && /opt/chia/make-plots.sh \
+    && /opt/chia/make-certs.sh
 
 FROM chia-binaries AS runtime
 ENV CHIA_ROOT=/run/chia/root \
     CHIA_KEYS_ROOT=/run/chia/keys \
-    SIA_HOME=/opt/sia
+    CHIA_HOME=/opt/chia
 
-COPY scripts/entrypoint.sh scripts/lab-mnemonic.txt /opt/sia/
+COPY scripts/entrypoint.sh scripts/lab-mnemonic.txt /opt/chia/
 COPY controls/ /workspace/controls/
 COPY scenarios/ /workspace/scenarios/
 RUN chmod 0755 \
-      /opt/sia/entrypoint.sh \
+      /opt/chia/entrypoint.sh \
       /workspace/controls/logging.sh \
       /workspace/controls/actions.sh \
-      /workspace/controls/info.sh \
       /workspace/controls/network.sh \
       /workspace/controls/scenario-tie.sh \
       /workspace/scenarios/*.sh \
-    && ln -s /opt/sia/entrypoint.sh /usr/local/bin/sia-entrypoint \
-    && mkdir -p /opt/sia/plots
+    && ln -s /opt/chia/entrypoint.sh /usr/local/bin/chia-entrypoint \
+    && mkdir -p /opt/chia/plots
 
 WORKDIR /workspace

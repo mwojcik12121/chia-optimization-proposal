@@ -246,8 +246,8 @@ int waitForMessage(const std::string& host, const int port, const std::string& n
 
 void printUsage() {
     std::cerr << "Usage:\n"
-              << "  sia-signal serve PORT EXPECTED MESSAGE TIMEOUT_SECONDS\n"
-              << "  sia-signal wait HOST PORT NODE_NAME TIMEOUT_SECONDS\n";
+              << "  chia-signal serve PORT EXPECTED MESSAGE TIMEOUT_SECONDS\n"
+              << "  chia-signal wait HOST PORT NODE_NAME TIMEOUT_SECONDS\n";
 }
 
 }

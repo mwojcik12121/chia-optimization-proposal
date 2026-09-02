@@ -2,9 +2,9 @@
 set -Eeuo pipefail
 
 readonly PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly SIA_BINARY_IMAGE="${SIA_BINARY_IMAGE:-chia-binaries:built}"
+readonly CHIA_BINARY_IMAGE="${CHIA_BINARY_IMAGE:-chia-binaries:built}"
 readonly RUNTIME_IMAGE_TAG="${RUNTIME_IMAGE_TAG:-local}"
-readonly NODES=(node01 node02 node03 node04 node05 node06 node07 node08 node09)
+readonly NODES=(node01 node02 node03 node04 node06 node07 node08 node09)
 readonly COMPOSE_FILE="${PROJECT_ROOT}/docker/compose.yaml"
 
 build_target() {
@@ -13,7 +13,7 @@ build_target() {
   DOCKER_BUILDKIT=1 docker build \
     --pull=false \
     --network=none \
-    --build-arg "SIA_BINARY_IMAGE=${SIA_BINARY_IMAGE}" \
+    --build-arg "CHIA_BINARY_IMAGE=${CHIA_BINARY_IMAGE}" \
     --target "${target}" \
     --tag "${image}" \
     --file docker/Dockerfile \
@@ -23,8 +23,8 @@ build_target() {
 main() {
   cd "${PROJECT_ROOT}"
   export RUNTIME_IMAGE_TAG
-  build_target runtime "sia-runtime200-base:${RUNTIME_IMAGE_TAG}"
-  build_target assets "sia-runtime200-assets:${RUNTIME_IMAGE_TAG}"
+  build_target runtime "chia-runtime200-base:${RUNTIME_IMAGE_TAG}"
+  build_target assets "chia-runtime200-assets:${RUNTIME_IMAGE_TAG}"
   docker compose --file "${COMPOSE_FILE}" build --pull=false "${NODES[@]}"
 }
 

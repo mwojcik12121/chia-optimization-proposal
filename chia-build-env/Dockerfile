@@ -47,15 +47,15 @@ RUN curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rust
 
 COPY src/ /build/src/
 COPY scripts/sources.sh /usr/local/bin/sources
-COPY scripts/configure_node.cpp scripts/lab_signal.cpp /tmp/sia-helpers/
+COPY scripts/configure_node.cpp scripts/lab_signal.cpp /tmp/chia-helpers/
 
 RUN chmod 0755 /usr/local/bin/sources \
     && /usr/local/bin/sources \
     && g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic \
-         /tmp/sia-helpers/configure_node.cpp -lyaml-cpp -o /usr/local/bin/sia-config \
+         /tmp/chia-helpers/configure_node.cpp -lyaml-cpp -o /usr/local/bin/chia-config \
     && g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic \
-         /tmp/sia-helpers/lab_signal.cpp -o /usr/local/bin/sia-signal \
-    && rm -rf /tmp/sia-helpers /build/wheels /build/cargo-target /build/runtime
+         /tmp/chia-helpers/lab_signal.cpp -o /usr/local/bin/chia-signal \
+    && rm -rf /tmp/chia-helpers /build/wheels /build/cargo-target /build/runtime
 
 FROM ubuntu:24.04 AS binary-runtime
 
@@ -77,7 +77,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=source-builder /opt/chia-blockchain/ /opt/chia-blockchain/
-COPY --from=source-builder /usr/local/bin/sia-config /usr/local/bin/sia-config
-COPY --from=source-builder /usr/local/bin/sia-signal /usr/local/bin/sia-signal
+COPY --from=source-builder /usr/local/bin/chia-config /usr/local/bin/chia-config
+COPY --from=source-builder /usr/local/bin/chia-signal /usr/local/bin/chia-signal
 
 WORKDIR /workspace

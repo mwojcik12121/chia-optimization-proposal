@@ -72,7 +72,7 @@ source_fallback_version() {
   fi
 
   basename="$(basename "${repository}")"
-  if [[ "${basename}" =~ ([vV]?[0-9]+([.][0-9A-Za-z]+)*([+._-][0-9A-Za-z.-]+)?)$ ]]; then
+  if [[ "${basename}" =~ [-_]([vV]?[0-9]+([.][0-9A-Za-z]+)+([+._-][0-9A-Za-z.-]+)?)$ ]]; then
     version="${BASH_REMATCH[1]}"
     version="${version#v}"
     version="${version#V}"

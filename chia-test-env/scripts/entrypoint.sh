@@ -6,6 +6,9 @@ source /workspace/controls/actions.sh
 
 readonly SCENARIO="${1:-${SCENARIO:-}}"
 readonly BOOTSTRAP_TIMEOUT="${BOOTSTRAP_TIMEOUT:-1800}"
+readonly FARMER_NODES="${FARMER_NODES:-node01,node02,node03,node04}"
+readonly TIMELORD_NODES="${TIMELORD_NODES:-node06,node07}"
+readonly VDF_CLIENTS_PER_TIMELORD="${VDF_CLIENTS_PER_TIMELORD:-3}"
 readonly BOOTSTRAP_READY_PORT=19001
 readonly CHAIN_READY_PORT=19002
 readonly BOOTSTRAP_DONE_PORT=19003
@@ -38,6 +41,33 @@ entry_cleanup() {
 
 entry_is_selected_node() {
   [[ ",${SCENARIO_NODES:-}," == *",${NODE_NAME},"* ]]
+}
+
+entry_csv_contains() {
+  local values="${1:-}"
+  local value="${2:?value missing}"
+  [[ ",${values}," == *",${value},"* ]]
+}
+
+entry_csv_count() {
+  local values="${1:-}"
+  local -a items=()
+  [[ -n "${values}" ]] || {
+    printf '%s\n' 0
+    return 0
+  }
+  IFS=',' read -r -a items <<<"${values}"
+  printf '%s\n' "${#items[@]}"
+}
+
+entry_other_node_count() {
+  local count
+  count="$(entry_csv_count "${SCENARIO_NODES:-}")"
+  (( count > 0 )) || {
+    entry_error 'SCENARIO_NODES must contain at least one node'
+    return 1
+  }
+  printf '%s\n' "$((count - 1))"
 }
 
 entry_peak_height() {
@@ -125,17 +155,17 @@ entry_setup_runtime() {
 
   chia init >/dev/null 2>&1
   rm -rf "${CHIA_ROOT}/config/ssl"
-  cp -a /opt/sia/node-ssl "${CHIA_ROOT}/config/ssl"
-  chia keys add --filename /opt/sia/lab-mnemonic.txt --label private200 >/dev/null 2>&1
+  cp -a /opt/chia/node-ssl "${CHIA_ROOT}/config/ssl"
+  chia keys add --filename /opt/chia/lab-mnemonic.txt --label private200 >/dev/null 2>&1
   chmod -R go-rwx "${CHIA_ROOT}/config/ssl" "${CHIA_KEYS_ROOT}" || true
 
   initial_address="$(chia keys show --json | jq -er '.keys[0].wallet_address')"
-  sia-config "${CHIA_ROOT}/config/config.yaml" "${NODE_ID}" "${NODE_ROLE}" "${initial_address}"
+  chia-config "${CHIA_ROOT}/config/config.yaml" "${NODE_ID}" "${NODE_ROLE}" "${initial_address}"
   network_address="$(chia keys show --json | jq -er '.keys[0].wallet_address')"
-  sia-config "${CHIA_ROOT}/config/config.yaml" "${NODE_ID}" "${NODE_ROLE}" "${network_address}"
+  chia-config "${CHIA_ROOT}/config/config.yaml" "${NODE_ID}" "${NODE_ROLE}" "${network_address}"
 
   if [[ "${NODE_ROLE}" == farmer ]]; then
-    find /opt/sia/plots -maxdepth 1 -type f -name '*.plot' -exec cp -a '{}' /run/chia/plots/ \;
+    find /opt/chia/plots -maxdepth 1 -type f -name '*.plot' -exec cp -a '{}' /run/chia/plots/ \;
   fi
 }
 
@@ -166,13 +196,21 @@ entry_start_bootstrap_services() {
 }
 
 entry_bootstrap_ready_barrier() {
-  local message
-  if [[ "${NODE_NAME}" == node04 || "${NODE_NAME}" == node07 ]]; then
-    action_wait_for_vdf_clients 3 420
+  local message expected_clients expected_peers other_nodes
+  if [[ ! "${VDF_CLIENTS_PER_TIMELORD}" =~ ^([3-9]|[1-9][0-9]+)$ ]]; then
+    entry_error 'VDF_CLIENTS_PER_TIMELORD must be an integer of at least three'
+    return 1
+  fi
+  if entry_csv_contains "${TIMELORD_NODES}" "${NODE_NAME}"; then
+    expected_clients="${VDF_CLIENTS_PER_TIMELORD}"
+    action_wait_for_vdf_clients "${expected_clients}" 420
   fi
   if [[ "${NODE_NAME}" == node01 ]]; then
-    action_signal_serve "${BOOTSTRAP_READY_PORT}" 8 BOOTSTRAP_START "${BOOTSTRAP_TIMEOUT}" >/dev/null
-    entry_wait_for_full_node_peers 2 180
+    other_nodes="$(entry_other_node_count)"
+    expected_peers=$(( $(entry_csv_count "${FARMER_NODES}") - 1 ))
+    action_signal_serve \
+      "${BOOTSTRAP_READY_PORT}" "${other_nodes}" BOOTSTRAP_START "${BOOTSTRAP_TIMEOUT}" >/dev/null
+    entry_wait_for_full_node_peers "${expected_peers}" 180
   else
     message="$(action_signal_wait node01 "${BOOTSTRAP_READY_PORT}" "${BOOTSTRAP_TIMEOUT}")"
     [[ "${message}" == BOOTSTRAP_START ]] || {
@@ -202,7 +240,7 @@ entry_verify_initial_chain() {
 }
 
 entry_build_initial_chain() {
-  local height hash block_count
+  local height hash block_count other_nodes
   action_start_farming
   action_wait_for_plot 240
   action_wait_for_height 199 "${BOOTSTRAP_TIMEOUT}"
@@ -215,7 +253,9 @@ entry_build_initial_chain() {
   block_count=$((height + 1))
   test_log INFO bootstrap \
     "INITIAL CHAIN READY: required_blocks=200 actual_blocks=${block_count} peak_height=${height} peak_hash=${hash}"
-  action_signal_serve "${CHAIN_READY_PORT}" 8 "CHAIN_READY|${height}|${hash}" "${BOOTSTRAP_TIMEOUT}" >/dev/null
+  other_nodes="$(entry_other_node_count)"
+  action_signal_serve \
+    "${CHAIN_READY_PORT}" "${other_nodes}" "CHAIN_READY|${height}|${hash}" "${BOOTSTRAP_TIMEOUT}" >/dev/null
 }
 
 entry_receive_initial_chain() {
@@ -238,9 +278,11 @@ entry_stop_bootstrap_timing() {
 }
 
 entry_bootstrap_done_barrier() {
-  local message
+  local message other_nodes
   if [[ "${NODE_NAME}" == node01 ]]; then
-    action_signal_serve "${BOOTSTRAP_DONE_PORT}" 8 BOOTSTRAP_DONE "${BOOTSTRAP_TIMEOUT}" >/dev/null
+    other_nodes="$(entry_other_node_count)"
+    action_signal_serve \
+      "${BOOTSTRAP_DONE_PORT}" "${other_nodes}" BOOTSTRAP_DONE "${BOOTSTRAP_TIMEOUT}" >/dev/null
   else
     message="$(action_signal_wait node01 "${BOOTSTRAP_DONE_PORT}" "${BOOTSTRAP_TIMEOUT}")"
     [[ "${message}" == BOOTSTRAP_DONE ]] || {
@@ -274,7 +316,7 @@ main() {
     entry_build_initial_chain
   else
     entry_receive_initial_chain
-    if [[ "${NODE_NAME}" == node02 || "${NODE_NAME}" == node03 ]]; then
+    if entry_csv_contains "${FARMER_NODES}" "${NODE_NAME}"; then
       entry_wait_for_shared_peak "${CHAIN_READY_HEIGHT}" "${CHAIN_READY_HASH}" "${BOOTSTRAP_TIMEOUT}"
       entry_verify_initial_chain "${CHAIN_READY_HEIGHT}" "${CHAIN_READY_HASH}"
     fi

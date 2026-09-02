@@ -107,6 +107,18 @@ from chia.util.task_referencer import create_referenced_task
 SHORT_SYNC_BACKTRACK_BLOCK_REQUEST_TIMEOUT_SEC: int = 15
 
 
+def _block_candidate_source(peer: WSChiaConnection | None) -> str:
+    if peer is None:
+        return "current_machine"
+
+    # This identifies the transport peer which delivered the block. It must not
+    # be described as the farmer/creator because blocks may be relayed.
+    return (
+        f"transport_peer(node_id={peer.peer_node_id.hex()},"
+        f"host={peer.peer_info.host},port={peer.peer_info.port})"
+    )
+
+
 # This is the result of calling peak_post_processing, which is then fed into peak_post_processing_2
 @dataclasses.dataclass
 class PeakPostProcessingResult:
@@ -1807,6 +1819,7 @@ class FullNode:
                 fork_info,
                 prev_ses_block=vs.prev_ses_block,
                 block_record=block_rec,
+                candidate_source=f"sync_peer(host={peer_info.host},port={peer_info.port})",
             )
             if error is None:
                 blockchain.remove_extra_block(header_hash)
@@ -2329,7 +2342,11 @@ class FullNode:
                     if fork_info is None:
                         fork_info = ForkInfo(block.height - 1, block.height - 1, block.prev_header_hash)
                     (added, error_code, state_change_summary) = await self.blockchain.add_block(
-                        block, pre_validation_result, ssi, fork_info
+                        block,
+                        pre_validation_result,
+                        ssi,
+                        fork_info,
+                        candidate_source=_block_candidate_source(peer),
                     )
                 add_block_time = time.monotonic() - add_block_start
                 if added == AddBlockResult.ALREADY_HAVE_BLOCK:

@@ -61,34 +61,6 @@ action_wait_for_full_node_rpc() {
   done
 }
 
-action_wait_for_wallet_rpc() {
-  local timeout="${1:-240}"
-  local elapsed=0
-  until _action_rpc wallet get_sync_status '{}' >/dev/null 2>&1; do
-    sleep 1
-    elapsed=$((elapsed + 1))
-    if (( elapsed >= timeout )); then
-      _action_error "wallet RPC timeout after ${timeout}s"
-      return 1
-    fi
-  done
-}
-
-action_wait_for_wallet_sync() {
-  local timeout="${1:-600}"
-  local elapsed=0 response
-  while true; do
-    response="$(_action_rpc wallet get_sync_status '{}' 2>/dev/null || true)"
-    jq -e '.synced == true' <<<"${response}" >/dev/null 2>&1 && return 0
-    sleep 2
-    elapsed=$((elapsed + 2))
-    if (( elapsed >= timeout )); then
-      _action_error "wallet synchronization timeout after ${timeout}s"
-      return 1
-    fi
-  done
-}
-
 action_wait_for_height() {
   local target="${1:?target height missing}"
   local timeout="${2:-600}"
@@ -129,6 +101,37 @@ action_wait_for_peak_hash() {
   done
 }
 
+action_fork_tie_key() {
+  local header_hash="${1:?header hash missing}"
+  local database normalized_hash row tie_key key_version extra
+  local -a databases=()
+  mapfile -d '' -t databases < <(
+    find "${CHIA_ROOT:?CHIA_ROOT is not set}/db" \
+      -maxdepth 1 -type f -name 'blockchain_v2_*.sqlite' -print0
+  )
+  if (( ${#databases[@]} != 1 )); then
+    _action_error "expected one blockchain database, found ${#databases[@]}"
+    return 1
+  fi
+  database="${databases[0]}"
+  normalized_hash="${header_hash#0x}"
+  [[ "${normalized_hash}" =~ ^[0-9a-fA-F]{64}$ ]] || {
+    _action_error "invalid header hash: ${header_hash}"
+    return 1
+  }
+  row="$(
+    sqlite3 -batch -noheader -readonly "${database}" \
+      "SELECT lower(hex(tie_key)) || '|' || key_version
+       FROM fork_order_keys WHERE header_hash = x'${normalized_hash}'"
+  )"
+  IFS='|' read -r tie_key key_version extra <<<"${row}"
+  if [[ ! "${tie_key}" =~ ^[0-9a-f]{64}$ || "${key_version}" != 1 || -n "${extra:-}" ]]; then
+    _action_error "fork tie key is missing or has an unsupported format for ${header_hash}"
+    return 1
+  fi
+  printf '%s\n' "${tie_key}"
+}
+
 action_start_farming() {
   _action_require_role farmer
   action_start_services farmer-only
@@ -141,88 +144,12 @@ action_stop_farming() {
   action_stop_services harvester
 }
 
-action_mine_blocks() {
-  local count="${1:-1}"
-  local timeout="${2:-600}"
-  local before
-  _action_require_role farmer
-  before="$(_action_peak_height)"
-  action_start_farming
-  action_wait_for_height "$((before + count))" "${timeout}"
-}
-
 action_connect_peer() {
   local host="${1:?peer host missing}"
   local port="${2:-8444}"
   _action_rpc full_node open_connection \
     "$(jq -cn --arg host "${host}" --argjson port "${port}" '{host:$host,port:$port}')" \
     >/dev/null
-}
-
-action_disconnect_peer() {
-  local node_id="${1:?peer node ID missing}"
-  _action_rpc full_node close_connection \
-    "$(jq -cn --arg node_id "${node_id}" '{node_id:$node_id}')" \
-    >/dev/null
-}
-
-action_new_address() {
-  local wallet_id="${1:-1}"
-  _action_rpc wallet get_next_address \
-    "$(jq -cn --argjson wallet_id "${wallet_id}" '{wallet_id:$wallet_id,new_address:true}')" \
-    | jq -er '.address'
-}
-
-action_send_transaction() {
-  local address="${1:?destination address missing}"
-  local amount="${2:?amount missing}"
-  local fee="${3:-0}"
-  local wallet_id="${4:-1}"
-  local response transaction_id
-  response="$(_action_rpc wallet send_transaction \
-    "$(jq -cn --argjson wallet_id "${wallet_id}" --arg address "${address}" \
-      --argjson amount "${amount}" --argjson fee "${fee}" \
-      '{wallet_id:$wallet_id,address:$address,amount:$amount,fee:$fee,push:true}')")"
-  transaction_id="$(jq -r '.transaction_id // .transaction.name // .transactions[0].name // empty' <<<"${response}")"
-  [[ -n "${transaction_id}" ]] || {
-    _action_error 'wallet returned no transaction ID'
-    return 1
-  }
-  [[ "${transaction_id}" == 0x* ]] || transaction_id="0x${transaction_id}"
-  ACTION_LAST_TRANSACTION_ID="${transaction_id}"
-  export ACTION_LAST_TRANSACTION_ID
-  printf '%s\n' "${transaction_id}"
-}
-
-action_send_to_self() {
-  local amount="${1:-1000000}"
-  local fee="${2:-0}"
-  local wallet_id="${3:-1}"
-  local address
-  address="$(action_new_address "${wallet_id}")"
-  action_send_transaction "${address}" "${amount}" "${fee}" "${wallet_id}"
-}
-
-action_wait_for_transaction() {
-  local transaction_id="${1:-${ACTION_LAST_TRANSACTION_ID:-}}"
-  local timeout="${2:-900}"
-  local elapsed=0 response
-  [[ -n "${transaction_id}" ]] || {
-    _action_error 'transaction ID is required'
-    return 1
-  }
-  while true; do
-    response="$(_action_rpc wallet get_transaction \
-      "$(jq -cn --arg transaction_id "${transaction_id}" '{transaction_id:$transaction_id}')" \
-      2>/dev/null || true)"
-    jq -e '.transaction.confirmed == true' <<<"${response}" >/dev/null 2>&1 && return 0
-    sleep 2
-    elapsed=$((elapsed + 2))
-    if (( elapsed >= timeout )); then
-      _action_error "transaction confirmation timeout after ${timeout}s"
-      return 1
-    fi
-  done
 }
 
 action_wait_for_plot() {
@@ -313,14 +240,14 @@ action_signal_serve() {
   local expected="${2:?client count missing}"
   local message="${3:?message missing}"
   local timeout="${4:-900}"
-  sia-signal serve "${port}" "${expected}" "${message}" "${timeout}"
+  chia-signal serve "${port}" "${expected}" "${message}" "${timeout}"
 }
 
 action_signal_wait() {
   local host="${1:?server host missing}"
   local port="${2:?port missing}"
   local timeout="${3:-900}"
-  sia-signal wait "${host}" "${port}" "${NODE_NAME:-node-unknown}" "${timeout}"
+  chia-signal wait "${host}" "${port}" "${NODE_NAME:-node-unknown}" "${timeout}"
 }
 
 action_capture_next_block() {
@@ -358,16 +285,8 @@ action_capture_next_block() {
       _action_error "no new block after ${timeout}s"
       return 1
     fi
-    sleep 0.02
+    sleep 0.005
   done
-}
-
-action_freeze_after_next_block() {
-  local parent_height="${1:?parent height missing}"
-  local timeout="${2:-600}"
-  action_start_farming
-  action_wait_for_plot 180
-  action_capture_next_block "${parent_height}" "${timeout}"
 }
 
 action_finish_frozen_block() {
