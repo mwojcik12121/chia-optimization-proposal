@@ -144,8 +144,7 @@ void configureConsensus(YAML::Node& root, const std::string& prefarmPuzzleHash) 
     constants["MIN_PLOT_SIZE_V1"] = 18;
     constants["PLOT_SIZE_V2"] = 20;
     constants["MIN_BLOCKS_PER_CHALLENGE_BLOCK"] = 12;
-    // A small discrete required-iterations range makes independently produced
-    // blocks collide often enough for the exact fork tie-break scenario.
+    // Use a low initial difficulty for fast private-chain bootstrap.
     constants["DIFFICULTY_STARTING"] = 128;
     // Use production-size VDF discriminants so the configured 150k IPS
     // estimate is meaningful and the two-second signage-point cadence holds.
@@ -153,17 +152,14 @@ void configureConsensus(YAML::Node& root, const std::string& prefarmPuzzleHash) 
     constants["SUB_EPOCH_BLOCKS"] = 170;
     constants["WEIGHT_PROOF_THRESHOLD"] = 2;
     constants["WEIGHT_PROOF_RECENT_BLOCKS"] = 500;
-    // Keep every accepted K25 quality at one required iteration on private200.
-    // Distinct proofs at the same signage point therefore have equal
-    // total_iters and reach the new deterministic fork-order comparison.
+    // Keep K25 farming inexpensive on the private network.
     constants["DIFFICULTY_CONSTANT_FACTOR"] = 1;
     constants["NUM_SPS_SUB_SLOT"] = 16;
     constants["MAX_SUB_SLOT_BLOCKS"] = 50;
     constants["EPOCH_BLOCKS"] = 340;
     constants["BLOCKS_CACHE_SIZE"] = 1020;
-    // With one required iteration and no plot filter, a single plot can make a
-    // block at every signage point. Space those points two seconds apart so
-    // the control loop can freeze exactly one child before the next point.
+    // Space signage points two seconds apart for bootstrap monitoring and
+    // repeatable farming activity during the contention measurements.
     constants["SUB_SLOT_TIME_TARGET"] = 32;
     constants["SUB_SLOT_ITERS_STARTING"] = 4800000;
     constants["NUMBER_ZERO_BITS_PLOT_FILTER_V1"] = 0;
@@ -171,7 +167,6 @@ void configureConsensus(YAML::Node& root, const std::string& prefarmPuzzleHash) 
     constants["MAX_FUTURE_TIME2"] = 864000;
     constants["MEMPOOL_BLOCK_BUFFER"] = 6;
     constants["PLOT_V1_PHASE_OUT_EPOCH_BITS"] = 3;
-    constants["FORK_TIE_BREAK_HEIGHT"] = 200;
     constants["TESTNET"] = true;
 
     root["network_overrides"]["constants"]["private200"] = constants;
@@ -223,6 +218,11 @@ void configureFullNode(YAML::Node& root, const std::string& nodeId) {
     node["dns_servers"] = YAML::Node(YAML::NodeType::Sequence);
     node["introducer_peer"] = YAML::Node(YAML::NodeType::Null);
     node["trusted_peers"] = YAML::Node(YAML::NodeType::Map);
+    // Chia rejects inbound timelord connections unless they originate from
+    // localhost or an exempt network. The timelords run in separate
+    // containers, so exempt only their fixed addresses instead of the whole
+    // Docker subnet.
+    node["exempt_peer_networks"] = stringSequence({"172.28.0.16/32", "172.28.0.17/32"});
 }
 
 void configureWallet(YAML::Node& root) {

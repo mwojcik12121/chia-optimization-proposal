@@ -35,7 +35,7 @@ ENV LANG=C.UTF-8 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates curl git file unzip \
       python3 python3-dev python3-venv python3-pip \
-      build-essential cmake ninja-build pkg-config \
+    build-essential cmake ninja-build pkg-config \
       autoconf automake libtool clang libclang-dev \
       libgmp-dev libssl-dev libboost-all-dev libflint-dev libyaml-cpp-dev \
       libsqlite3-dev libffi-dev zlib1g-dev libbz2-dev liblzma-dev libzstd-dev \
@@ -67,7 +67,7 @@ ENV LANG=C.UTF-8 \
     PATH=/opt/chia-blockchain/.venv/bin:/opt/chia-blockchain:$PATH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash ca-certificates jq tini \
+  bash ca-certificates curl jq tini g++ nlohmann-json3-dev \
       python3 python3-venv \
       libgmp-dev libssl-dev libboost-all-dev libflint-dev libyaml-cpp-dev \
       libsqlite3-dev libffi-dev zlib1g-dev libbz2-dev liblzma-dev libzstd-dev \

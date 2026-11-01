@@ -6,6 +6,8 @@ readonly IMAGE_NAME=chia-binaries:built
 readonly PACKAGE_PATH="${PROJECT_ROOT}/bin/chia-binaries.tar.gz"
 BUILD_JOBS=1
 declare -A REPOSITORIES=()
+declare -A REPOSITORY_PATHS=()
+BUILD_CONTEXT=''
 
 build_usage() {
   cat <<'USAGE'
@@ -61,7 +63,7 @@ build_parse_arguments() {
 }
 
 build_require_repositories() {
-  local key directory
+  local key directory path
   local -a keys=(
     chia-blockchain chia-rs chiapos chiavdf chiabip158
     clvm-rs clvm clvm-tools chialisp chia-puzzles
@@ -71,11 +73,55 @@ build_require_repositories() {
   for key in "${keys[@]}"; do
     directory="${REPOSITORIES[${key}]:-}"
     [[ -n "${directory}" ]] || build_die "--${key} is required"
-    [[ -d "${PROJECT_ROOT}/src/${directory}" ]] || build_die "src/${directory} does not exist"
+    [[ "${directory}" != */* && "${directory}" != . && "${directory}" != .. ]] \
+      || build_die "invalid repository directory: ${directory}"
+    path="${PROJECT_ROOT}/src/${directory}"
+    [[ -d "${path}" ]] || build_die "repository does not exist: ${path}"
+    REPOSITORY_PATHS["${key}"]="$(realpath -- "${path}")"
+    [[ "${REPOSITORY_PATHS[${key}]}" == "${PROJECT_ROOT}/src/"* ]] \
+      || build_die "repository must be inside src: ${directory}"
+    REPOSITORIES["${key}"]="${REPOSITORY_PATHS[${key}]##*/}"
+  done
+}
+
+build_require_consensus_contract() {
+  local blockchain_constants chia_rs_constants mapping python_name rust_name
+  local -a constant_mappings=(
+    'PLOT_FILTER_V2_FIRST_ADJUSTMENT_HEIGHT:plot_filter_v2_first_adjustment_height'
+    'PLOT_FILTER_V2_SECOND_ADJUSTMENT_HEIGHT:plot_filter_v2_second_adjustment_height'
+    'PLOT_FILTER_V2_THIRD_ADJUSTMENT_HEIGHT:plot_filter_v2_third_adjustment_height'
+    'PLOT_FILTER_V2_RELATIVE_HEIGHT:plot_filter_v2_relative_height'
+    'FILTER_WINDOW_SIZE:filter_window_size'
+    'MAX_EFFECTIVE_PLOT_FILTER_BITS:max_effective_plot_filter_bits'
+  )
+
+  blockchain_constants="${REPOSITORY_PATHS[chia-blockchain]}/chia/consensus/default_constants.py"
+  chia_rs_constants="${REPOSITORY_PATHS[chia-rs]}/crates/chia-consensus/src/consensus_constants.rs"
+  [[ -f "${blockchain_constants}" ]] || build_die "missing consensus constants: ${blockchain_constants}"
+  [[ -f "${chia_rs_constants}" ]] || build_die "missing consensus constants: ${chia_rs_constants}"
+
+  for mapping in "${constant_mappings[@]}"; do
+    IFS=: read -r python_name rust_name <<<"${mapping}"
+    if grep -qE "${python_name}[[:space:]]*=" "${blockchain_constants}" \
+      && ! grep -qE "[[:space:]]${rust_name}:[[:space:]]" "${chia_rs_constants}"; then
+      build_die \
+        "${REPOSITORIES[chia-blockchain]} requires ${python_name}, but ${REPOSITORIES[chia-rs]} does not provide it"
+    fi
   done
 }
 
 build_image() {
+  local key
+  # Stage only the selected repositories from src/.
+  BUILD_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/chia-build.XXXXXX")"
+  trap 'rm -rf -- "${BUILD_CONTEXT}"' EXIT
+  mkdir -p "${BUILD_CONTEXT}/src"
+  cp "${PROJECT_ROOT}/Dockerfile" "${BUILD_CONTEXT}/Dockerfile"
+  cp -a "${PROJECT_ROOT}/scripts" "${BUILD_CONTEXT}/scripts"
+  for key in "${!REPOSITORIES[@]}"; do
+    cp -a "${REPOSITORY_PATHS[${key}]}" "${BUILD_CONTEXT}/src/${REPOSITORIES[${key}]##*/}"
+    REPOSITORIES["${key}"]="${REPOSITORIES[${key}]##*/}"
+  done
   DOCKER_BUILDKIT=1 docker build \
     --build-arg "BUILD_JOBS=${BUILD_JOBS}" \
     --build-arg "REPO_CHIA_BLOCKCHAIN=${REPOSITORIES[chia-blockchain]}" \
@@ -91,7 +137,7 @@ build_image() {
     --target binary-runtime \
     --tag "${IMAGE_NAME}" \
     --file Dockerfile \
-    .
+    "${BUILD_CONTEXT}"
 }
 
 build_package() {
@@ -107,6 +153,7 @@ main() {
   cd "${PROJECT_ROOT}"
   build_parse_arguments "$@"
   build_require_repositories
+  build_require_consensus_contract
   build_image
   build_package
 }

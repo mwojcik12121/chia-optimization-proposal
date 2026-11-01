@@ -1,3 +1,4 @@
 bin/*.tar.gz
 src/*
+!src/chia-blockchain-2.7.3-modified
 !src/README.md

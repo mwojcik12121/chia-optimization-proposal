@@ -17,10 +17,11 @@ readonly REQUIRED_HOST_STORAGE_BYTES=750000000000
 SCENARIO=''
 SCENARIO_NODES=''
 RUN_DATETIME=''
-COMPOSE_LOG_PID=''
 RUN_STARTED=0
+LOGS_INITIALIZED=0
 LOGS_SAVED=0
 BUILD_IMAGES=1
+BINARY_PACKAGE_SHA256='unknown'
 
 run_usage() {
   cat <<'USAGE'
@@ -102,7 +103,23 @@ run_require_capacity() {
 
 run_clear_old_logs() {
   mkdir -p "${LOG_DIRECTORY}"
-  find "${LOG_DIRECTORY}" -maxdepth 1 -type f -name '*.log' -delete
+  find "${LOG_DIRECTORY}" -mindepth 1 -maxdepth 1 ! -name README.md -exec rm -rf -- {} +
+}
+
+run_log_path() {
+  local node="${1:?node missing}"
+  printf '%s/%s_scenario%s_%s.log\n' \
+    "${LOG_DIRECTORY}" "${node}" "${SCENARIO}" "${RUN_DATETIME}"
+}
+
+run_initialize_logs() {
+  local node
+  RUN_DATETIME="$(date +%Y%m%d_%H%M%S)"
+  mkdir -p "${LOG_DIRECTORY}"
+  for node in "${NODES[@]}"; do
+    : >"$(run_log_path "${node}")"
+  done
+  LOGS_INITIALIZED=1
 }
 
 run_remove_stale_networks() {
@@ -121,16 +138,17 @@ run_remove_stale_networks() {
 }
 
 run_prepare_binary_image() {
-  if docker image inspect "${BINARY_IMAGE}" >/dev/null 2>&1; then
-    return 0
-  fi
+  local archive_sha=''
 
-  if ! docker image inspect "${BUILDER_IMAGE}" >/dev/null 2>&1; then
-    if [[ ! -f "${BINARY_ARCHIVE}" ]]; then
-      test_log ERROR runner "binary image ${BINARY_IMAGE} and package ${BINARY_ARCHIVE} are missing"
-      return 66
-    fi
+  if [[ -f "${BINARY_ARCHIVE}" ]]; then
+    archive_sha="$(sha256sum "${BINARY_ARCHIVE}" | awk '{print $1}')"
+    BINARY_PACKAGE_SHA256="${archive_sha}"
+    test_log INFO runner "loading binary package sha256=${archive_sha}"
     docker load --input "${BINARY_ARCHIVE}"
+  elif ! docker image inspect "${BINARY_IMAGE}" >/dev/null 2>&1 \
+      && ! docker image inspect "${BUILDER_IMAGE}" >/dev/null 2>&1; then
+    test_log ERROR runner "binary image ${BINARY_IMAGE} and package ${BINARY_ARCHIVE} are missing"
+    return 66
   fi
 
   if ! docker image inspect "${BUILDER_IMAGE}" >/dev/null 2>&1; then
@@ -140,30 +158,52 @@ run_prepare_binary_image() {
   if [[ "${BINARY_IMAGE}" != "${BUILDER_IMAGE}" ]]; then
     docker tag "${BUILDER_IMAGE}" "${BINARY_IMAGE}"
   fi
-}
-
-run_stop_console_logs() {
-  if [[ -n "${COMPOSE_LOG_PID}" ]]; then
-    kill "${COMPOSE_LOG_PID}" >/dev/null 2>&1 || true
-    wait "${COMPOSE_LOG_PID}" >/dev/null 2>&1 || true
-    COMPOSE_LOG_PID=''
+  if [[ "${BINARY_PACKAGE_SHA256}" == unknown ]]; then
+    BINARY_PACKAGE_SHA256="$(docker image inspect --format '{{.Id}}' "${BINARY_IMAGE}" | sed 's/^sha256://')"
   fi
 }
 
+run_identify_preloaded_binary_image() {
+  if ! docker image inspect "${BINARY_IMAGE}" >/dev/null 2>&1; then
+    test_log ERROR runner "binary image ${BINARY_IMAGE} is missing"
+    return 66
+  fi
+  BINARY_PACKAGE_SHA256="$(docker image inspect --format '{{.Id}}' "${BINARY_IMAGE}" | sed 's/^sha256://')"
+}
+
+run_append_chia_logs() {
+  local directory="${1:?log directory missing}"
+  local output="${2:?output file missing}"
+  local file
+  [[ -d "${directory}" ]] || return 0
+
+  # Chia rotates debug.log as debug.log.1, debug.log.2, ... . Append the
+  # oldest rotation first and the active file last.
+  while IFS= read -r file; do
+    [[ -n "${file}" ]] || continue
+    cat "${directory}/${file}" >>"${output}"
+  done < <(
+    find "${directory}" -maxdepth 1 -type f -name 'debug.log*' -printf '%f\n' \
+      | sort -V -r
+  )
+}
+
 run_save_logs() {
-  local node container output
-  (( RUN_STARTED == 1 && LOGS_SAVED == 0 )) || return 0
+  local node container output temporary
+  (( LOGS_INITIALIZED == 1 && LOGS_SAVED == 0 )) || return 0
   mkdir -p "${LOG_DIRECTORY}"
+
   for node in "${NODES[@]}"; do
-    output="${LOG_DIRECTORY}/${node}_scenario${SCENARIO}_${RUN_DATETIME}.log"
+    output="$(run_log_path "${node}")"
+    : >"${output}"
     container="$(run_compose ps --all --quiet "${node}" 2>/dev/null || true)"
-    if [[ -n "${container}" ]]; then
-      docker logs "${container}" 2>&1 \
-        | "${PROJECT_ROOT}/scripts/strip-ansi.sh" >"${output}" \
-        || true
-    else
-      : >"${output}"
-    fi
+    [[ -n "${container}" ]] || continue
+
+    temporary="$(mktemp -d)"
+    mkdir -p "${temporary}/chia-log"
+    docker cp "${container}:/run/chia/root/log/." "${temporary}/chia-log/" 2>/dev/null || true
+    run_append_chia_logs "${temporary}/chia-log" "${output}"
+    rm -rf "${temporary}"
   done
   LOGS_SAVED=1
 }
@@ -171,48 +211,19 @@ run_save_logs() {
 run_cleanup() {
   local status=$?
   trap - EXIT INT TERM
-  run_stop_console_logs
-  run_save_logs
   if (( RUN_STARTED == 1 )); then
-    run_compose down --volumes --remove-orphans --timeout 30 >/dev/null 2>&1 || true
+    # Preserve Chia's own application logs before removing the containers.
+    # Docker/Compose output stays terminal-only and result JSON is not copied.
+    run_compose stop --timeout 120 >/dev/null 2>&1 || true
+    run_save_logs
+    run_compose down --volumes --remove-orphans --timeout 120 || true
+  fi
+  if (( status == 0 )); then
+    test_log INFO runner "Chia logs: ${LOG_DIRECTORY}/nodeXX_scenario${SCENARIO}_${RUN_DATETIME}.log"
+  else
+    test_log ERROR runner "scenario failed with exit code ${status}; Chia logs: ${LOG_DIRECTORY}"
   fi
   exit "${status}"
-}
-
-run_container_state() {
-  local node="${1:?node missing}"
-  local container state code
-  container="$(run_compose ps --all --quiet "${node}" 2>/dev/null || true)"
-  if [[ -z "${container}" ]]; then
-    printf '%s\n' MISSING
-    return 0
-  fi
-  state="$(docker inspect --format '{{.State.Status}}' "${container}")"
-  case "${state}" in
-    running|created|restarting) printf '%s\n' RUNNING ;;
-    *)
-      code="$(docker inspect --format '{{.State.ExitCode}}' "${container}")"
-      printf 'EXIT:%s\n' "${code}"
-      ;;
-  esac
-}
-
-run_wait() {
-  local node state running
-  while true; do
-    running=0
-    for node in "${NODES[@]}"; do
-      state="$(run_container_state "${node}")"
-      case "${state}" in
-        RUNNING) running=$((running + 1)) ;;
-        MISSING) return 125 ;;
-        EXIT:0) ;;
-        EXIT:*) return "${state#EXIT:}" ;;
-      esac
-    done
-    (( running > 0 )) || return 0
-    sleep 1
-  done
 }
 
 run_scenario() {
@@ -220,31 +231,35 @@ run_scenario() {
   export RUNTIME_IMAGE_TAG="${RUNTIME_IMAGE_TAG:-local}"
   export CHIA_BINARY_IMAGE="${BINARY_IMAGE}"
   export COMPOSE_PROJECT_NAME="chia-runtime200-s${SCENARIO}-$$"
-  RUN_DATETIME="$(date +%Y%m%d_%H%M%S)"
-  mkdir -p "${LOG_DIRECTORY}"
 
   if (( BUILD_IMAGES == 1 )); then
     run_prepare_binary_image
+  else
+    run_identify_preloaded_binary_image
+  fi
+  export CHIA_BINARY_PACKAGE_SHA256="${BINARY_PACKAGE_SHA256}"
+
+  if (( BUILD_IMAGES == 1 )); then
     "${PROJECT_ROOT}/scripts/build.sh"
   fi
 
   RUN_STARTED=1
-  run_compose up --detach --no-build "${NODES[@]}"
-  run_compose logs --follow --no-color "${NODES[@]}" &
-  COMPOSE_LOG_PID=$!
-  run_wait
-  run_stop_console_logs
+  # Run Compose attached instead of following logs from a background process.
+  # This restores Compose's native color/progress handling and lets it reset the
+  # terminal normally when the scenario ends. Chia debug.log is not emitted by
+  # the containers and is copied separately after shutdown.
+  run_compose up --no-build --abort-on-container-failure "${NODES[@]}"
   run_save_logs
-  test_log INFO runner "logs: logs/nodeXX_scenario${SCENARIO}_${RUN_DATETIME}.log"
 }
 
 main() {
   cd "${PROJECT_ROOT}"
   run_parse_arguments "$@"
   run_discover_nodes
-  run_require_capacity
-  trap run_cleanup EXIT INT TERM
   run_clear_old_logs
+  run_initialize_logs
+  trap run_cleanup EXIT INT TERM
+  run_require_capacity
   run_remove_stale_networks
   run_scenario
 }

@@ -160,7 +160,7 @@ source_build_one() {
   local build_subdirectory="${4:?build subdirectory missing}"
   local runtime_filename="${5:?runtime filename missing}"
   local repository build_path output wheel runtime_path
-  local scm_environment fallback_version
+  local scm_environment scm_overrides_environment fallback_version
   local -a wheels=()
 
   repository="$(source_repository "${name}")"
@@ -170,10 +170,13 @@ source_build_one() {
   source_apply_compatibility_patches "${repository}" "${distribution}"
 
   scm_environment="$(source_scm_environment_name "${distribution}")"
+  scm_overrides_environment="${scm_environment/PRETEND_VERSION/OVERRIDES}"
   if ! source_has_usable_git_metadata "${repository}"; then
     fallback_version="$(source_fallback_version "${repository}")"
     export SETUPTOOLS_SCM_PRETEND_VERSION="${fallback_version}"
     export "${scm_environment}=${fallback_version}"
+    # Source-file discovery also reads the fallback when the version is pretended.
+    export "${scm_overrides_environment}={fallback_version = \"${fallback_version}\"}"
     export POETRY_DYNAMIC_VERSIONING_BYPASS="${fallback_version}"
   fi
 
@@ -190,6 +193,7 @@ source_build_one() {
 
   unset SETUPTOOLS_SCM_PRETEND_VERSION
   unset "${scm_environment}"
+  unset "${scm_overrides_environment}"
   unset POETRY_DYNAMIC_VERSIONING_BYPASS
 
   mapfile -t wheels < <(find "${output}" -maxdepth 1 -type f -name '*.whl' | sort)
@@ -244,7 +248,7 @@ source_external_requirements() {
 }
 
 source_install_runtime() {
-  local distribution wheel import_name runtime_filename runtime_path module_directory
+  local distribution wheel import_name runtime_filename runtime_path module_directory site_packages
   local -a requirements=()
 
   mapfile -t requirements < <(source_external_requirements)
@@ -258,16 +262,15 @@ source_install_runtime() {
       source_install_chialisp_alias
     fi
     if [[ "${runtime_filename}" != '-' ]]; then
-      module_directory="$("${VENV}/bin/python" -c '
-import importlib.util
-import pathlib
-import sys
-
-spec = importlib.util.find_spec(sys.argv[1])
-if spec is not None and spec.origin not in (None, "built-in", "frozen"):
-    print(pathlib.Path(spec.origin).parent)
-' "${import_name}")"
-      [[ -n "${module_directory}" ]] || source_die "installed module is missing: ${import_name}"
+      site_packages="$(find "${VENV}/lib" -type d -name site-packages -print -quit)"
+      [[ -n "${site_packages}" ]] || source_die 'Python site-packages directory is missing'
+      if [[ -d "${site_packages}/${import_name}" ]]; then
+        module_directory="${site_packages}/${import_name}"
+      else
+        [[ -n "$(find "${site_packages}" -maxdepth 1 -name "${import_name}*.so" -print -quit)" ]] \
+          || source_die "installed module is missing: ${import_name}"
+        module_directory="${site_packages}"
+      fi
       install -m 0755 "${runtime_path}" "${module_directory}/${runtime_filename}"
       ln -sfn "${module_directory}/${runtime_filename}" "${INSTALL_ROOT}/${runtime_filename}"
     fi

@@ -3,12 +3,15 @@
 test_log() {
   local severity="${1:-INFO}"
   local component="${2:-runtime}"
+  local line
   shift 2 || true
 
-  printf '%s %-8s [%s][%s] %s\n' \
+  printf -v line '%s %-8s [%s][%s] %s' \
     "$(date '+%Y-%m-%dT%H:%M:%S.%3N')" \
     "${severity}" \
     "${NODE_NAME:-runner}" \
     "${component}" \
-    "$*" >&2
+    "$*"
+
+  printf '%s\n' "${line}" >&2
 }
